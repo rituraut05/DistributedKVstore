@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package afs;
+
+service FileSystemService 
+{
+    rpc Ping (PingMessage) returns (PingMessage) {}
+
+}
+
+message PingMessage { }
