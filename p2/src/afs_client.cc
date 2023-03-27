@@ -37,14 +37,13 @@ using grpc::StatusCode;
 using std::cout;
 using std::endl;
 using std::string;
-using afs::DirectoryEntry;
 using afs::PingMessage;
 
+#define SERVER_ADDR           "0.0.0.0:50052"
 
 FileSystemClient::FileSystemClient(std::shared_ptr<Channel> channel)
     : stub_(FileSystemService::NewStub(channel))
 {
-    open_map.clear();
     std::cout << "-------------- Helloo --------------" << std::endl;
 }
 
@@ -69,4 +68,20 @@ int FileSystemClient::Ping(int* round_trip_time)
 
         return -1;
     }
+}
+
+
+int main()
+{
+
+	// init grpc connection
+	string target_address(SERVER_ADDR);
+    FileSystemClient* client;
+    client = new FileSystemClient(grpc::CreateChannel(target_address,
+                                grpc::InsecureChannelCredentials()));
+	printf("initgRPC: Client is contacting server: %s\n", SERVER_ADDR);
+	
+	int ping_time;
+	client->Ping(&ping_time);
+    return 0;
 }

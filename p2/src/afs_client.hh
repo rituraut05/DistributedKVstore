@@ -1,6 +1,5 @@
 #include <grpcpp/grpcpp.h>
 #include "afs.grpc.pb.h"
-#include <fuse.h>
 //#include <unreliablefs_ops.h>
 
 using namespace std;

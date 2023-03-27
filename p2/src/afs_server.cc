@@ -13,6 +13,27 @@
 #include <vector>
 #include <algorithm>
 #include <cstddef>
+#include <unordered_map>
+
+#include <chrono>
+#include <iostream>
+#include <memory>
+#include <random>
+#include <string>
+#include <thread>
+#include <vector>
+#include <unordered_map>
+#include <grpcpp/grpcpp.h>
+#include <string>
+#include <chrono>
+#include <ctime>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <utime.h>
+#include <fstream>
+#include <sstream>
+
 
 #include <grpc/grpc.h>
 #include <grpcpp/security/server_credentials.h>
@@ -30,8 +51,22 @@
 namespace fs = std::filesystem;
 
 using afs::PingMessage;
-using afs::Timestamp;
+using afs::FileSystemService;
 using fs::path;
+using grpc::Server;
+using grpc::ServerBuilder;
+using grpc::ServerContext;
+using grpc::ServerReader;
+using grpc::ServerReaderWriter;
+using grpc::ServerWriter;
+using grpc::Status;
+using grpc::StatusCode;
+using grpc::Channel;
+using grpc::ClientContext;
+using grpc::ClientReader;
+using grpc::ClientReaderWriter;
+using grpc::ClientWriter;
+using grpc::Status;
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
@@ -47,23 +82,47 @@ using std::string;
 static const string TEMP_FILE_EXT = ".afs_tmp";
 const std::vector<string> atomicFilesGroup = {};
 
+class RaftClient {
+  public:
+    RaftClient(std::shared_ptr<Channel> channel);
+    int Ping(int * round_trip_time);
+    void PingOtherServers();
+
+  private:
+    std::unique_ptr<FileSystemService::Stub> stub_;
+};
+
+RaftClient::RaftClient(std::shared_ptr<Channel> channel)
+    : stub_(FileSystemService::NewStub(channel)){}
+
+
+void RaftClient::PingOtherServers(){
+    printf("Hi in PingOtherServers\n");
+}
+
+
 
 class AFSImpl final : public FileSystemService::Service
 {
 
 public:
-    explicit AFSImpl(path root) : root(root) {}
+    RaftClient* raftClient;
+    explicit AFSImpl() {}
 
     Status Ping(ServerContext *context, const PingMessage *req, PingMessage *resp) override
     {
+        printf("Got Pinged\n");
+        raftClient->PingOtherServers();
         return Status::OK;
     }
 };
 
-void RunServer(path root)
+
+
+void RunServer()
 {
-    std::string server_address("0.0.0.0:50057");
-    AFSImpl service(root);
+    std::string server_address("0.0.0.0:50052");
+    AFSImpl service;
 
     ServerBuilder builder;
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
@@ -75,13 +134,7 @@ void RunServer(path root)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2)
-    {
-        fprintf(stdout, "Usage: ./afs_server root_folder\n");
-        return -1;
-    }
 
-    auto root = fs::canonical(argv[1]);
-    RunServer(root);
+    RunServer();
     return 0;
 }

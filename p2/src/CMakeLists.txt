@@ -43,7 +43,7 @@ target_link_libraries(hw_grpc_proto
   ${_PROTOBUF_LIBPROTOBUF})
 
 
-set(UNRELIABLEFS_SRC afs_client.cc wrapper.cc  conf.c unreliablefs.c unreliablefs_errinj.c unreliablefs_ops.c )
+# set(UNRELIABLEFS_SRC afs_client.cc wrapper.cc  conf.c unreliablefs.c unreliablefs_errinj.c unreliablefs_ops.c )
 
 
 add_executable(afs_client afs_client.cc)
