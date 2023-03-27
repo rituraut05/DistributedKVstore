@@ -34,37 +34,26 @@
 #include <fstream>
 #include <sstream>
 
-
 #include <grpc/grpc.h>
 #include <grpcpp/security/server_credentials.h>
 #include <grpcpp/server.h>
 #include <grpcpp/server_builder.h>
 #include <grpcpp/server_context.h>
 #ifdef BAZEL_BUILD
-#include "afs.grpc.pb.h"
+#include "db.grpc.pb.h"
 #else
-#include "afs.grpc.pb.h"
+#include "db.grpc.pb.h"
 #endif
 
 #define CHUNK_SIZE 4096
 
-
-using afs::PingMessage;
-using afs::FileSystemService;
-using grpc::Server;
-using grpc::ServerBuilder;
-using grpc::ServerContext;
-using grpc::ServerReader;
-using grpc::ServerReaderWriter;
-using grpc::ServerWriter;
-using grpc::Status;
-using grpc::StatusCode;
+using db::RaftServer;
+using db::PingMessage;
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientReader;
 using grpc::ClientReaderWriter;
 using grpc::ClientWriter;
-using grpc::Status;
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
@@ -79,28 +68,28 @@ using std::string;
 
 #define SERVER1 "0.0.0.0:50053"
 
+
+// ***************************** RaftClient Code *****************************
+
 class RaftClient {
   public:
     RaftClient(std::shared_ptr<Channel> channel);
-    int Ping(int * round_trip_time);
-    int PingFollower(int * round_trip_time);
-
     int PingOtherServers();
 
   private:
-    std::unique_ptr<FileSystemService::Stub> stub_;
+    std::unique_ptr<RaftServer::Stub> stub_;
 };
 
 RaftClient::RaftClient(std::shared_ptr<Channel> channel)
-    : stub_(FileSystemService::NewStub(channel)){}
+    : stub_(RaftServer::NewStub(channel)){}
 
 
 int RaftClient::PingOtherServers(){
     printf("Hi in PingOtherServers\n");
     string target_address(SERVER1);
-    std::unique_ptr<FileSystemService::Stub> server1_stub;
+    std::unique_ptr<RaftServer::Stub> server1_stub;
 
-    server1_stub = FileSystemService::NewStub(grpc::CreateChannel(SERVER1, grpc::InsecureChannelCredentials()));
+    server1_stub = RaftServer::NewStub(grpc::CreateChannel(SERVER1, grpc::InsecureChannelCredentials()));
 	printf("initgRPC: Client is contacting server: %s\n", SERVER1);
 	
 	int ping_time;
@@ -115,14 +104,14 @@ int RaftClient::PingOtherServers(){
     else return -1;
 }
 
+// ***************************** RaftServer Code *****************************
 
-
-class AFSImpl final : public FileSystemService::Service
+class dbImpl final : public RaftServer::Service
 {
 
 public:
     RaftClient* raftClient;
-    explicit AFSImpl() {}
+    explicit dbImpl() {}
 
     Status Ping(ServerContext *context, const PingMessage *req, PingMessage *resp) override
     {
@@ -141,8 +130,8 @@ public:
 
 void RunServer()
 {
-    std::string server_address("0.0.0.0:50052");
-    AFSImpl service;
+    std::string server_address("0.0.0.0:50053");
+    dbImpl service;
 
     ServerBuilder builder;
     builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());

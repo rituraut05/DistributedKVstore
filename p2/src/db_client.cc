@@ -17,8 +17,8 @@
 #include <fstream>
 #include <sstream>
 
-#include "afs.grpc.pb.h"
-#include "afs_client.hh"
+#include "db.grpc.pb.h"
+#include "db_client.hh"
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -37,12 +37,12 @@ using grpc::StatusCode;
 using std::cout;
 using std::endl;
 using std::string;
-using afs::PingMessage;
+using db::PingMessage;
 
 #define SERVER_ADDR           "0.0.0.0:50052"
 
 FileSystemClient::FileSystemClient(std::shared_ptr<Channel> channel)
-    : stub_(FileSystemService::NewStub(channel))
+    : stub_(RaftServer::NewStub(channel))
 {
     std::cout << "-------------- Helloo --------------" << std::endl;
 }
