@@ -13,6 +13,7 @@ class FileSystemClient {
   public:
     FileSystemClient(std::shared_ptr<Channel> channel);
     int Ping(int * round_trip_time);
+    int Ping2(int *round_trip_time);
 
   private:
     std::unique_ptr<FileSystemService::Stub> stub_;

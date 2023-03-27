@@ -5,6 +5,9 @@ package afs;
 service FileSystemService 
 {
     rpc Ping (PingMessage) returns (PingMessage) {}
+
+    rpc PingFollower (PingMessage) returns (PingMessage) {}
+
 }
 
 message PingMessage { }

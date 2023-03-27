@@ -48,11 +48,9 @@
 
 #define CHUNK_SIZE 4096
 
-namespace fs = std::filesystem;
 
 using afs::PingMessage;
 using afs::FileSystemService;
-using fs::path;
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
@@ -79,14 +77,15 @@ using std::cout;
 using std::endl;
 using std::string;
 
-static const string TEMP_FILE_EXT = ".afs_tmp";
-const std::vector<string> atomicFilesGroup = {};
+#define SERVER1 "0.0.0.0:50053"
 
 class RaftClient {
   public:
     RaftClient(std::shared_ptr<Channel> channel);
     int Ping(int * round_trip_time);
-    void PingOtherServers();
+    int PingFollower(int * round_trip_time);
+
+    int PingOtherServers();
 
   private:
     std::unique_ptr<FileSystemService::Stub> stub_;
@@ -96,8 +95,24 @@ RaftClient::RaftClient(std::shared_ptr<Channel> channel)
     : stub_(FileSystemService::NewStub(channel)){}
 
 
-void RaftClient::PingOtherServers(){
+int RaftClient::PingOtherServers(){
     printf("Hi in PingOtherServers\n");
+    string target_address(SERVER1);
+    std::unique_ptr<FileSystemService::Stub> server1_stub;
+
+    server1_stub = FileSystemService::NewStub(grpc::CreateChannel(SERVER1, grpc::InsecureChannelCredentials()));
+	printf("initgRPC: Client is contacting server: %s\n", SERVER1);
+	
+	int ping_time;
+    PingMessage request;
+    PingMessage reply;
+    Status status;
+
+    ClientContext context;
+    status = server1_stub->PingFollower(&context, request, &reply);
+    printf("%d\n", status.ok());
+    if (status.ok())return 0;
+    else return -1;
 }
 
 
@@ -115,8 +130,13 @@ public:
         raftClient->PingOtherServers();
         return Status::OK;
     }
-};
 
+    Status PingFollower(ServerContext *context, const PingMessage *req, PingMessage *resp) override
+    {
+        printf("Got Pinged by other node's client \n");
+        return Status::OK;
+    }
+};
 
 
 void RunServer()
