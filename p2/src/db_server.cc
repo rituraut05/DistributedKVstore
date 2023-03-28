@@ -34,6 +34,7 @@
 #endif
 
 #include "timer.hh"
+#include "leveldb/db.h"
 
 using util::Timer;
 using db::RaftServer;
@@ -152,6 +153,38 @@ int main(int argc, char **argv)
     return 0;
   }
 
+  leveldb::DB *db;
+  leveldb::Options options;
+  options.create_if_missing = true;
+  leveldb::Status status = leveldb::DB::Open(options, "/tmp/distributorsdb", &db);
+  if (!status.ok()) std::cerr << status.ToString() << endl;
+  assert(status.ok());
+
+  string key = "name";
+  string value = "navani";
+
+  // write
+  status = db->Put(leveldb::WriteOptions(), key, value);
+  assert(status.ok());
+
+  // read
+  status = db->Get(leveldb::ReadOptions(), key, &value);
+  assert(status.ok());
+
+  std::cout << value << endl;
+
+  // delete
+  // status = db->Delete(leveldb::WriteOptions(), key);
+  // assert(status.ok());
+
+  status = db->Get(leveldb::ReadOptions(), key, &value);
+  if (!status.ok()) {
+      std::cerr << key << "    " << status.ToString() << endl;
+  } else {
+      std::cout << key << "===" << value << endl;
+  }
+  //close
+  // delete db;
   serverID = atoi(argv[1]);
   setCurrState(FOLLOWER);
   electionTimer.set_running(false);

@@ -53,13 +53,15 @@ hw_grpc_proto
     ${_GRPC_GRPCPP}
     ${_PROTOBUF_LIBPROTOBUF})
 
+add_subdirectory(third_party/leveldb)
 add_executable(db_server db_server.cc timer.cc)
-target_link_libraries(db_server
+target_link_libraries(db_server PUBLIC
     "stdc++fs"
     hw_grpc_proto
     ${_REFLECTION}
     ${_GRPC_GRPCPP}
-    ${_PROTOBUF_LIBPROTOBUF})
+    ${_PROTOBUF_LIBPROTOBUF}
+    leveldb)
 
 target_compile_options(db_client PUBLIC -D_FILE_OFFSET_BITS=64 -Wall -Wextra -Wno-unused-parameter)
 target_compile_options(db_client PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-std=c++17 -D_FILE_OFFSET_BITS=64>)
