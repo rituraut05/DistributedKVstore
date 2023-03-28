@@ -8,31 +8,19 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
-#include <filesystem>
 #include <shared_mutex>
 #include <vector>
-#include <algorithm>
 #include <cstddef>
 #include <unordered_map>
-
-#include <chrono>
-#include <iostream>
-#include <memory>
 #include <random>
-#include <string>
 #include <thread>
-#include <vector>
 #include <unordered_map>
-#include <grpcpp/grpcpp.h>
-#include <string>
-#include <chrono>
 #include <ctime>
-#include <fcntl.h>
 #include <unistd.h>
-#include <sys/stat.h>
 #include <utime.h>
 #include <fstream>
 #include <sstream>
+#include <grpcpp/grpcpp.h>
 
 #include <grpc/grpc.h>
 #include <grpcpp/security/server_credentials.h>
@@ -45,8 +33,9 @@
 #include "db.grpc.pb.h"
 #endif
 
-#define CHUNK_SIZE 4096
+#include "timer.hh"
 
+using util::Timer;
 using db::RaftServer;
 using db::PingMessage;
 using grpc::Channel;
@@ -66,8 +55,21 @@ using std::cout;
 using std::endl;
 using std::string;
 
+// Move to file with server configs and read from there upon start
 #define SERVER1 "0.0.0.0:50053"
 
+
+enum State {FOLLOWER, CANDIDATE, LEADER};
+
+// ***************************** Global Variables ****************************
+int serverID;
+int leaderID;
+
+State currState;
+int commitIndex = -1;
+int lastApplied = -1;
+Timer electionTimer(1);
+Timer heartbeatTimer(1);
 
 // ***************************** RaftClient Code *****************************
 
@@ -81,7 +83,7 @@ class RaftClient {
 };
 
 RaftClient::RaftClient(std::shared_ptr<Channel> channel)
-    : stub_(RaftServer::NewStub(channel)){}
+  : stub_(RaftServer::NewStub(channel)){}
 
 
 int RaftClient::PingOtherServers(){
@@ -110,40 +112,51 @@ class dbImpl final : public RaftServer::Service
 {
 
 public:
-    RaftClient* raftClient;
-    explicit dbImpl() {}
+  RaftClient* raftClient;
+  explicit dbImpl() {}
 
-    Status Ping(ServerContext *context, const PingMessage *req, PingMessage *resp) override
-    {
-        printf("Got Pinged\n");
-        raftClient->PingOtherServers();
-        return Status::OK;
-    }
+  Status Ping(ServerContext *context, const PingMessage *req, PingMessage *resp) override
+  {
+    printf("Got Pinged\n");
+    raftClient->PingOtherServers();
+    return Status::OK;
+  }
 
-    Status PingFollower(ServerContext *context, const PingMessage *req, PingMessage *resp) override
-    {
-        printf("Got Pinged by other node's client \n");
-        return Status::OK;
-    }
+  Status PingFollower(ServerContext *context, const PingMessage *req, PingMessage *resp) override
+  {
+    printf("Got Pinged by other node's client \n");
+    return Status::OK;
+  }
 };
 
-
-void RunServer()
+void setCurrState(State cs)
 {
-    std::string server_address("0.0.0.0:50053");
-    dbImpl service;
+  currState = cs;
+}
 
-    ServerBuilder builder;
-    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    builder.RegisterService(&service);
-    std::unique_ptr<Server> server(builder.BuildAndStart());
-    std::cout << "Server listening on " << server_address << std::endl;
-    server->Wait();
+void RunServer(string server_address)
+{
+  dbImpl service;
+  ServerBuilder builder;
+  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  builder.RegisterService(&service);
+  std::unique_ptr<Server> server(builder.BuildAndStart());
+  std::cout << "Server listening on " << server_address << std::endl;
+  server->Wait();
 }
 
 int main(int argc, char **argv)
 {
-
-    RunServer();
+  if(argc != 3) {
+    printf("Usage: ./db_server <serverID> <server address>\n");
     return 0;
+  }
+
+  serverID = atoi(argv[1]);
+  setCurrState(FOLLOWER);
+  electionTimer.set_running(false);
+  heartbeatTimer.set_running(false);
+
+  RunServer(argv[2]);
+  return 0;
 }

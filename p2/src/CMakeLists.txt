@@ -53,7 +53,7 @@ hw_grpc_proto
     ${_GRPC_GRPCPP}
     ${_PROTOBUF_LIBPROTOBUF})
 
-add_executable(db_server db_server.cc)
+add_executable(db_server db_server.cc timer.cc)
 target_link_libraries(db_server
     "stdc++fs"
     hw_grpc_proto
