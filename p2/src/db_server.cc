@@ -62,12 +62,13 @@ using std::chrono::system_clock;
 
 #define MIN_ELECTION_TIMEOUT   150
 #define MAX_ELECTION_TIMEOUT   300
-#define HEARTBEAT_TIMEOUT      100
+#define HEARTBEAT_TIMEOUT      50
 
 // Move to file with server configs and read from there upon start
 #define SERVER1 "0.0.0.0:50053"
 
 
+// ***************************** State enum **********************************
 enum State {FOLLOWER, CANDIDATE, LEADER};
 
 // ***************************** Log class ***********************************
@@ -111,7 +112,7 @@ RaftClient::RaftClient(std::shared_ptr<Channel> channel)
   : stub_(RaftServer::NewStub(channel)){}
 
 
-int RaftClient::PingOtherServers(){
+int RaftClient::PingOtherServers() {
     printf("Hi in PingOtherServers\n");
     string target_address(SERVER1);
     std::unique_ptr<RaftServer::Stub> server1_stub;
@@ -133,8 +134,7 @@ int RaftClient::PingOtherServers(){
 
 // ***************************** RaftServer Code *****************************
 
-class dbImpl final : public RaftServer::Service
-{
+class dbImpl final : public RaftServer::Service {
 
 public:
   RaftClient* raftClient;
@@ -185,6 +185,7 @@ void runElectionTimer() {
   while(electionTimer.running() && 
     electionTimer.get_tick() < electionTimer._timeout) ; // spin
   printf("Spun for %d ms before timing out in state %d for term %d\n", electionTimer._timeout, currState, currentTerm);
+  // kill any current requestVote threads
   electionRunning = false;
   setCurrState(CANDIDATE);
 }
@@ -192,6 +193,7 @@ void runElectionTimer() {
 void runElection() {
   electionRunning = true;
   currentTerm++; // persist current term
+  votedFor = serverID; // persist votedFor
   printf("[runRaftServer] Running Election for term=%d\n", currentTerm);
   // RequestVotes, gather votes
 }
@@ -235,8 +237,7 @@ void runRaftServer() {
   }
 }
 
-void RunGrpcServer(string server_address)
-{
+void RunGrpcServer(string server_address) {
   dbImpl service;
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
@@ -246,8 +247,7 @@ void RunGrpcServer(string server_address)
   server->Wait();
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   if(argc != 3) {
     printf("Usage: ./db_server <serverID> <server address>\n");
     return 0;
