@@ -85,14 +85,17 @@ int serverID;
 int leaderID;
 
 State currState;
-int commitIndex = -1; // -1 because log starts from index 0
+int commitIndex = 0; // index starts from 1
 Timer electionTimer(1, MAX_ELECTION_TIMEOUT);
 Timer heartbeatTimer(1, HEARTBEAT_TIMEOUT);
 bool electionRunning = false;
 
+leveldb::DB *plogs;
+leveldb::DB *pmetadata;
+leveldb::DB *replicateddb;
 // *************************** Persistent Variables **************************
 int currentTerm = 0; // Valid terms start from 1
-int lastApplied = -1;
+int lastApplied = 0; // index starts from 1
 int votedFor = -1; // -1 means did not vote for anyone in current term yet
 vector<Log> logs; // purge old logs periodically as the class stores the index information
                   // purging is done so we do not run out of memory 
@@ -247,50 +250,72 @@ void RunGrpcServer(string server_address) {
   server->Wait();
 }
 
+void openOrCreateDBs() {
+  leveldb::Options options;
+  options.create_if_missing = true;
+
+  leveldb::Status plogs_status = leveldb::DB::Open(options, "/tmp/plogs", &plogs);
+  if (!plogs_status.ok()) std::cerr << plogs_status.ToString() << endl;
+  assert(plogs_status.ok());
+
+  leveldb::Status pmetadata_status = leveldb::DB::Open(options, "/tmp/pmetadata", &pmetadata);
+  if(!pmetadata_status.ok()) std::cerr << pmetadata_status.ToString() << endl;
+  assert(pmetadata_status.ok());
+
+  leveldb::Status replicateddb_status = leveldb::DB::Open(options, "/tmp/replicateddb", &replicateddb);
+  if(!replicateddb_status.ok()) std::cerr << replicateddb_status.ToString() << endl;
+  assert(replicateddb_status.ok());
+}
+
+void initializePersistedValues() {
+  string value;
+  leveldb::Status currentTermStatus = pmetadata->Get(leveldb::ReadOptions(), "currentTerm", &value);
+  if (!currentTermStatus.ok()) {
+    std::cerr << "[initializePersistedValues] currentTerm" << ": Error: " << currentTermStatus.ToString() << endl;
+  } else {
+    currentTerm = atoi(value.c_str());
+    printf("[initializePersistedValues] currentTerm = %d\n", currentTerm);
+  }
+
+  value = "";
+  leveldb::Status lastAppliedStatus = pmetadata->Get(leveldb::ReadOptions(), "lastApplied", &value);
+  if(!lastAppliedStatus.ok()) {
+    std::cerr << "[initializePersistedValues] lastApplied" << ": Error: " << lastAppliedStatus.ToString() << endl;
+  } else {
+    lastApplied = atoi(value.c_str());
+    printf("[initializePersistedValues] lastApplied = %d\n", lastApplied);
+  }
+
+  value = "";
+  leveldb::Status votedForStatus = pmetadata->Get(leveldb::ReadOptions(), "votedFor", &value);
+  if(!votedForStatus.ok()) {
+    std::cerr << "[initializePersistedValues] votedFor" << ": Error: " << votedForStatus.ToString() << endl;
+  } else {
+    votedFor = atoi(value.c_str());
+    printf("[initializePersistedValues] votedFor = %d\n", votedFor);
+  }
+
+  // get persisted logs from plogs and initialize
+}
+
 int main(int argc, char **argv) {
   if(argc != 3) {
     printf("Usage: ./db_server <serverID> <server address>\n");
     return 0;
   }
 
-  leveldb::DB *db;
-  leveldb::Options options;
-  options.create_if_missing = true;
-  leveldb::Status status = leveldb::DB::Open(options, "/tmp/distributorsdb", &db);
-  if (!status.ok()) std::cerr << status.ToString() << endl;
-  assert(status.ok());
-
-  string key = "name";
-  string value = "navani";
-
-  // write
-  status = db->Put(leveldb::WriteOptions(), key, value);
-  assert(status.ok());
-
-  // read
-  status = db->Get(leveldb::ReadOptions(), key, &value);
-  assert(status.ok());
-
-  std::cout << value << endl;
-
-  // delete
-  // status = db->Delete(leveldb::WriteOptions(), key);
-  // assert(status.ok());
-
-  status = db->Get(leveldb::ReadOptions(), key, &value);
-  if (!status.ok()) {
-      std::cerr << key << "    " << status.ToString() << endl;
-  } else {
-      std::cout << key << "===" << value << endl;
-  }
-  //close
-  // delete db;
-
   // initialize values 
   serverID = atoi(argv[1]);
   setCurrState(FOLLOWER);
   electionTimer.set_running(false);
-  heartbeatTimer.set_running(false);
+  heartbeatTimer.set_running(false); 
+
+  // open leveldb DBs
+  openOrCreateDBs();
+  // read from persisted variables
+  initializePersistedValues();
+
+  // initialize channels to servers
 
   // Run threads
   thread raftGrpcServer(RunGrpcServer, argv[2]);
