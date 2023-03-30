@@ -14,7 +14,6 @@
 #include <unordered_map>
 #include <random>
 #include <thread>
-#include <unordered_map>
 #include <ctime>
 #include <unistd.h>
 #include <utime.h>
@@ -55,22 +54,48 @@ using grpc::StatusCode;
 using std::cout;
 using std::endl;
 using std::string;
+using std::thread;
+using std::vector;
+using std::default_random_engine;
+using std::uniform_int_distribution;
+using std::chrono::system_clock;
+
+#define MIN_ELECTION_TIMEOUT   150
+#define MAX_ELECTION_TIMEOUT   300
+#define HEARTBEAT_TIMEOUT      50
 
 // Move to file with server configs and read from there upon start
 #define SERVER1 "0.0.0.0:50053"
 
 
+// ***************************** State enum **********************************
 enum State {FOLLOWER, CANDIDATE, LEADER};
 
-// ***************************** Global Variables ****************************
+// ***************************** Log class ***********************************
+class Log {
+  public:
+    int index;
+    int term;
+    string key;
+    string value;
+};
+
+// ***************************** Volatile Variables **************************
 int serverID;
 int leaderID;
 
 State currState;
-int commitIndex = -1;
+int commitIndex = -1; // -1 because log starts from index 0
+Timer electionTimer(1, MAX_ELECTION_TIMEOUT);
+Timer heartbeatTimer(1, HEARTBEAT_TIMEOUT);
+bool electionRunning = false;
+
+// *************************** Persistent Variables **************************
+int currentTerm = 0; // Valid terms start from 1
 int lastApplied = -1;
-Timer electionTimer(1);
-Timer heartbeatTimer(1);
+int votedFor = -1; // -1 means did not vote for anyone in current term yet
+vector<Log> logs; // purge old logs periodically as the class stores the index information
+                  // purging is done so we do not run out of memory 
 
 // ***************************** RaftClient Code *****************************
 
@@ -87,7 +112,7 @@ RaftClient::RaftClient(std::shared_ptr<Channel> channel)
   : stub_(RaftServer::NewStub(channel)){}
 
 
-int RaftClient::PingOtherServers(){
+int RaftClient::PingOtherServers() {
     printf("Hi in PingOtherServers\n");
     string target_address(SERVER1);
     std::unique_ptr<RaftServer::Stub> server1_stub;
@@ -109,8 +134,7 @@ int RaftClient::PingOtherServers(){
 
 // ***************************** RaftServer Code *****************************
 
-class dbImpl final : public RaftServer::Service
-{
+class dbImpl final : public RaftServer::Service {
 
 public:
   RaftClient* raftClient;
@@ -130,13 +154,90 @@ public:
   }
 };
 
+// ********************************* Functions ************************************
+
 void setCurrState(State cs)
 {
   currState = cs;
 }
 
-void RunServer(string server_address)
-{
+int getRandomTimeout() {
+  unsigned seed = system_clock::now().time_since_epoch().count();
+  default_random_engine generator(seed);
+  uniform_int_distribution<int> distribution(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT);
+  return distribution(generator);
+}
+
+void executeLog() {
+  while(true) {
+    if(lastApplied < commitIndex) {
+      lastApplied++;
+      printf("Executing Log: %d\n", lastApplied);
+      // Execute log at index lastApplied here 
+      // Decrement lastApplied back to original value if there was a failure
+    }
+  }
+}
+
+void runElectionTimer() {
+  int timeout = getRandomTimeout();
+  electionTimer.start(timeout);
+  while(electionTimer.running() && 
+    electionTimer.get_tick() < electionTimer._timeout) ; // spin
+  printf("Spun for %d ms before timing out in state %d for term %d\n", electionTimer._timeout, currState, currentTerm);
+  // kill any current requestVote threads
+  electionRunning = false;
+  setCurrState(CANDIDATE);
+}
+
+void runElection() {
+  electionRunning = true;
+  currentTerm++; // persist current term
+  votedFor = serverID; // persist votedFor
+  printf("[runRaftServer] Running Election for term=%d\n", currentTerm);
+  // RequestVotes, gather votes
+}
+
+void runRaftServer() {
+  thread electionTimerThread;
+  thread heartbeatTimerThread;
+  while(true) {
+    if(currState == FOLLOWER) {
+      if(heartbeatTimer.running()) {
+        heartbeatTimer.set_running(false);
+        heartbeatTimerThread.join();
+      }
+      if(!electionTimer.running()) {
+        electionTimer.set_running(true);
+        electionTimerThread = thread { runElectionTimer };
+      }
+    }
+    if(currState == CANDIDATE) {
+      if(heartbeatTimer.running()) {
+        heartbeatTimer.set_running(false);
+        heartbeatTimerThread.join();
+      }
+      if(!electionRunning) {
+        electionTimerThread.join();
+        electionTimer.set_running(true);
+        electionTimerThread = thread { runElectionTimer };
+        runElection();
+      }
+    }
+    if(currState == LEADER) {
+      if(electionTimer.running()) {
+        electionTimer.set_running(false);
+        electionTimerThread.join();
+      }
+      if(!heartbeatTimer.running()) {
+        heartbeatTimer.set_running(true);
+        // heartbeatTimer = thread { runHeartbeatTimer };
+      }
+    }
+  }
+}
+
+void RunGrpcServer(string server_address) {
   dbImpl service;
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
@@ -146,8 +247,7 @@ void RunServer(string server_address)
   server->Wait();
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   if(argc != 3) {
     printf("Usage: ./db_server <serverID> <server address>\n");
     return 0;
@@ -185,11 +285,20 @@ int main(int argc, char **argv)
   }
   //close
   // delete db;
+
+  // initialize values 
   serverID = atoi(argv[1]);
   setCurrState(FOLLOWER);
   electionTimer.set_running(false);
   heartbeatTimer.set_running(false);
 
-  RunServer(argv[2]);
+  // Run threads
+  thread raftGrpcServer(RunGrpcServer, argv[2]);
+  thread logExecutor(executeLog);
+  thread raftServer(runRaftServer);
+
+  raftGrpcServer.join();
+  logExecutor.join();
+  raftServer.join();
   return 0;
 }

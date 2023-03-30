@@ -5,10 +5,10 @@ util::Timer::Timer()
 	
 }
 
-util::Timer::Timer(int const& tick_duration)
+util::Timer::Timer(int const& tick_duration, int timeout)
 {
 	set_tick_duration(tick_duration);
-	reset();
+	reset(timeout);
 }
 
 /* Protected */
@@ -53,19 +53,25 @@ void util::Timer::set_running(bool running)
 
 /* Methods */
 
-void util::Timer::start()
+void util::Timer::start(int timeout)
 {
-	reset();
+	reset(timeout);
 }
 
-void util::Timer::reset()
+void util::Timer::reset(int timeout)
 {
 	_update = true;
 	_current_tick = 0;
+  _timeout = timeout;
 	_start = std::chrono::system_clock::now();
 }
 
 bool util::Timer::updated()
 {
 	return _update;
+}
+
+bool util::Timer::running()
+{
+  return _running;
 }
