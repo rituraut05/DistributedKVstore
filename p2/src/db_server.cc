@@ -232,14 +232,26 @@ void executeLog() {
   }
 }
 
+void runElection() {
+  electionRunning = true;
+  currentTerm++;
+  votedFor = serverID; 
+  pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
+  pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(votedFor));
+  printf("[runElection] Running Election for term=%d\n", currentTerm);
+  // RequestVotes, gather votes
+  electionRunning = false;
+}
+
 void runElectionTimer() {
+  votedFor = -1;
+  pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(votedFor));
   int timeout = getRandomTimeout();
   electionTimer.start(timeout);
   while(electionTimer.running() && 
     electionTimer.get_tick() < electionTimer._timeout) ; // spin
-  printf("[runElectionTimer] Spun for %d ms before timing out in state %d for term %d\n", electionTimer._timeout, currState, currentTerm);
-  // kill any current requestVote threads
-  electionRunning = false;
+  printf("[runElectionTimer] Spun for %d ms before timing out in state %d for term %d\n", electionTimer.get_tick(), currState, currentTerm);
+  runElection();
   setCurrState(CANDIDATE);
 }
 
@@ -252,14 +264,6 @@ void runHeartbeatTimer() {
   runHeartbeatTimer();
 }
 
-void runElection() {
-  electionRunning = true;
-  currentTerm++; // persist current term
-  votedFor = serverID; // persist votedFor
-  printf("[runRaftServer] Running Election for term=%d\n", currentTerm);
-  // RequestVotes, gather votes
-}
-
 void runRaftServer() {
   thread electionTimerThread;
   thread heartbeatTimerThread;
@@ -270,6 +274,7 @@ void runRaftServer() {
         heartbeatTimerThread.join();
       }
       if(!electionTimer.running()) {
+        electionTimerThread.join();
         electionTimer.set_running(true);
         electionTimerThread = thread { runElectionTimer };
       }
@@ -283,7 +288,6 @@ void runRaftServer() {
         electionTimerThread.join();
         electionTimer.set_running(true);
         electionTimerThread = thread { runElectionTimer };
-        runElection();
       }
     }
     if(currState == LEADER) {
@@ -332,7 +336,7 @@ void initializePersistedValues() {
   if (!currentTermStatus.ok()) {
     std::cerr << "[initializePersistedValues] currentTerm" << ": Error: " << currentTermStatus.ToString() << endl;
   } else {
-    currentTerm = atoi(value.c_str());
+    currentTerm = stoi(value);
     printf("[initializePersistedValues] currentTerm = %d\n", currentTerm);
   }
 
@@ -341,7 +345,7 @@ void initializePersistedValues() {
   if(!lastAppliedStatus.ok()) {
     std::cerr << "[initializePersistedValues] lastApplied" << ": Error: " << lastAppliedStatus.ToString() << endl;
   } else {
-    lastApplied = atoi(value.c_str());
+    lastApplied = stoi(value);
     printf("[initializePersistedValues] lastApplied = %d\n", lastApplied);
   }
 
@@ -350,7 +354,7 @@ void initializePersistedValues() {
   if(!votedForStatus.ok()) {
     std::cerr << "[initializePersistedValues] votedFor" << ": Error: " << votedForStatus.ToString() << endl;
   } else {
-    votedFor = atoi(value.c_str());
+    votedFor = stoi(value);
     printf("[initializePersistedValues] votedFor = %d\n", votedFor);
   }
 
