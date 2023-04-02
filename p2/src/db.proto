@@ -8,8 +8,12 @@ service RaftServer
 
     rpc PingFollower (PingMessage) returns (PingMessage) {}
 
+    rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse) {}
+
     rpc Get (GetRequest) returns (GetResponse) {}
 }
+
+message PingMessage { }
 
 message GetRequest {
     string key = 1;
@@ -20,4 +24,24 @@ message GetResponse {
     string value = 2;
     uint32 db_errno = 3;
 }
-message PingMessage { }
+
+message LogEntry {
+    uint32 index = 1;
+    uint32 term = 2;
+    string key = 3;
+    string value = 4; 
+}
+
+message AppendEntriesRequest {
+    uint32 term = 1;
+    uint32 leaderId = 2;
+    uint32 prevLogIndex = 3;
+    uint32 prevLogTerm = 4;
+    repeated LogEntry entries = 5;
+    uint32 leaderCommitIndex = 6;
+}
+
+message AppendEntriesResponse {
+    uint32 currTerm = 1;
+    bool success = 2;
+}
