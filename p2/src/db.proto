@@ -8,6 +8,16 @@ service RaftServer
 
     rpc PingFollower (PingMessage) returns (PingMessage) {}
 
+    rpc Get (GetRequest) returns (GetResponse) {}
 }
 
+message GetRequest {
+    string key = 1;
+}
+
+message GetResponse {
+    uint32 leaderid = 1;
+    string value = 2;
+    uint32 db_errno = 3;
+}
 message PingMessage { }

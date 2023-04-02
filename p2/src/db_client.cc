@@ -19,6 +19,7 @@
 
 #include "db.grpc.pb.h"
 #include "db_client.hh"
+#include "config.hh"
 
 using grpc::Channel;
 using grpc::ClientContext;
@@ -40,14 +41,29 @@ using std::string;
 using db::PingMessage;
 
 #define SERVER_ADDR           "0.0.0.0:50052"
+typedef std::unique_ptr<RaftServer::Stub> ServerStub;
 
-FileSystemClient::FileSystemClient(std::shared_ptr<Channel> channel)
+int leaderID = 0; // hardcoded leaderID for now, should remove.
+DbClient::DbClient(std::shared_ptr<Channel> channel)
     : stub_(RaftServer::NewStub(channel))
 {
     std::cout << "-------------- Helloo --------------" << std::endl;
 }
+DbClient::DbClient()
+{
+    std::cout << "-------------- Helloo --------------" << std::endl;
+}
 
-int FileSystemClient::Ping(int* round_trip_time)
+/********************* Helper Functions **************************************/
+ServerStub initConnection(int id){
+    ServerStub stub;
+    stub = RaftServer::NewStub(grpc::CreateChannel(SERVER1, grpc::InsecureChannelCredentials()));
+
+	printf("initgRPC: Client is contacting server: %s\n", SERVER1);
+    return stub;
+}
+
+int DbClient::Ping(int* round_trip_time)
 {
     auto start = std::chrono::steady_clock::now();
 
@@ -65,23 +81,63 @@ int FileSystemClient::Ping(int* round_trip_time)
         return 0;
     }
     else {
+        return -1;
+    }
+}
 
+int DbClient::Get(string key, string* value) {
+    printf("[Get]: Invoked;\n");
+
+    GetRequest req;
+    GetResponse res;
+    Status status;
+
+    ClientContext context;
+    req.set_key(key);
+    res.Clear();
+
+    ServerStub stub = initConnection(leaderID);
+    status = stub->Get(&context, req, &res);
+
+    if (status.ok()) {
+        int server_errno = res.db_errno();
+        if (server_errno) {
+            printf("[Get]: Error %d on server.\n", server_errno);
+            printf("[Get]: Function ended due to server failure.\n");
+            errno = server_errno;
+            return -1;
+        }
+        // value = &res.value();
+        printf("%s\n", res.value().c_str());
+        
+        printf("[Get]: Function ended;\n");
+        return 0;
+    } else {
+        errno = RPCstatusCode(status.error_code());
+        printf("[Get]: RPC failure\n");
         return -1;
     }
 }
 
 
-int main()
+int main(int argc, char **argv)
 {
+    string key, value;
+    DbClient* client;
+    client = new DbClient();
+    if(argc == 2){
+        key = argv[1];
+        string val;
+        client->Get(key, &val);
+    }
+    else if(argc == 3){
+        key = argv[1];
+        value = argv[2];
+    }else{
+        printf("Usage:\nTo get value from db:\n ./db_client <key> \nTo put key value pair in db:\n ./db_client <key> <value>\n");
+        return 0;
+    }
 
 	// init grpc connection
-	string target_address(SERVER_ADDR);
-    FileSystemClient* client;
-    client = new FileSystemClient(grpc::CreateChannel(target_address,
-                                grpc::InsecureChannelCredentials()));
-	printf("initgRPC: Client is contacting server: %s\n", SERVER_ADDR);
-	
-	int ping_time;
-	client->Ping(&ping_time);
     return 0;
 }

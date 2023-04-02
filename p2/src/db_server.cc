@@ -32,12 +32,11 @@
 #include "db.grpc.pb.h"
 #endif
 
+#include "config.hh"
 #include "timer.hh"
 #include "leveldb/db.h"
 
 using util::Timer;
-using db::RaftServer;
-using db::PingMessage;
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientReader;
@@ -60,12 +59,18 @@ using std::default_random_engine;
 using std::uniform_int_distribution;
 using std::chrono::system_clock;
 
+using db::RaftServer;
+using db::PingMessage;
+using db::GetRequest;
+using db::GetResponse;
+
 #define MIN_ELECTION_TIMEOUT   150
 #define MAX_ELECTION_TIMEOUT   300
 #define HEARTBEAT_TIMEOUT      50
+#define SERVER_CNT             5
 
 // Move to file with server configs and read from there upon start
-#define SERVER1 "0.0.0.0:50053"
+
 
 
 // ***************************** State enum **********************************
@@ -82,7 +87,7 @@ class Log {
 
 // ***************************** Volatile Variables **************************
 int serverID;
-int leaderID;
+int leaderID = 0;
 
 State currState;
 int commitIndex = -1; // -1 because log starts from index 0
@@ -107,6 +112,8 @@ class RaftClient {
   private:
     std::unique_ptr<RaftServer::Stub> stub_;
 };
+
+leveldb::DB *levelDB;
 
 RaftClient::RaftClient(std::shared_ptr<Channel> channel)
   : stub_(RaftServer::NewStub(channel)){}
@@ -152,6 +159,22 @@ public:
     printf("Got Pinged by other node's client \n");
     return Status::OK;
   }
+
+  Status Get(ServerContext *context, const GetRequest *req, GetResponse *resp) override
+  {
+    if(currState!= LEADER){
+      resp->set_value("");
+      resp->set_leaderid(leaderID);
+      return Status(StatusCode::PERMISSION_DENIED, "Server not allowed top perform leader operations");
+    }
+    printf("Get invoked on server\n");
+    string value;
+    string key = req->key();
+    leveldb::Status status = levelDB->Get(leveldb::ReadOptions(), key, &value);
+    printf("Value: %s\n", value.c_str());
+    resp->set_value(value);
+    return Status::OK;
+  }
 };
 
 // ********************************* Functions ************************************
@@ -194,8 +217,9 @@ void runElection() {
   electionRunning = true;
   currentTerm++; // persist current term
   votedFor = serverID; // persist votedFor
-  printf("[runRaftServer] Running Election for term=%d\n", currentTerm);
+  printf("[runRaftSermver] Running Election for term=%d\n", currentTerm);
   // RequestVotes, gather votes
+  // 
 }
 
 void runRaftServer() {
@@ -253,10 +277,9 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  leveldb::DB *db;
   leveldb::Options options;
   options.create_if_missing = true;
-  leveldb::Status status = leveldb::DB::Open(options, "/tmp/distributorsdb", &db);
+  leveldb::Status status = leveldb::DB::Open(options, "/tmp/distributorsdb", &levelDB);
   if (!status.ok()) std::cerr << status.ToString() << endl;
   assert(status.ok());
 
@@ -264,20 +287,20 @@ int main(int argc, char **argv) {
   string value = "navani";
 
   // write
-  status = db->Put(leveldb::WriteOptions(), key, value);
+  status = levelDB->Put(leveldb::WriteOptions(), key, value);
   assert(status.ok());
 
   // read
-  status = db->Get(leveldb::ReadOptions(), key, &value);
+  status = levelDB->Get(leveldb::ReadOptions(), key, &value);
   assert(status.ok());
 
   std::cout << value << endl;
 
   // delete
-  // status = db->Delete(leveldb::WriteOptions(), key);
+  // status = levelDB->Delete(leveldb::WriteOptions(), key);
   // assert(status.ok());
 
-  status = db->Get(leveldb::ReadOptions(), key, &value);
+  status = levelDB->Get(leveldb::ReadOptions(), key, &value);
   if (!status.ok()) {
       std::cerr << key << "    " << status.ToString() << endl;
   } else {
@@ -288,7 +311,12 @@ int main(int argc, char **argv) {
 
   // initialize values 
   serverID = atoi(argv[1]);
-  setCurrState(FOLLOWER);
+  if(serverID == leaderID){
+    setCurrState(LEADER);
+  }else{
+    setCurrState(FOLLOWER);
+  }
+  
   electionTimer.set_running(false);
   heartbeatTimer.set_running(false);
 
