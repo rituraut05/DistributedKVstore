@@ -37,6 +37,11 @@
 #include "leveldb/db.h"
 
 using util::Timer;
+using db::RaftServer;
+using db::PingMessage;
+using db::AppendEntriesRequest;
+using db::AppendEntriesResponse;
+using db::LogEntry;
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientReader;
@@ -156,79 +161,6 @@ int votedFor = -1; // -1 means did not vote for anyone in current term yet
 vector<Log> logs; // purge old logs periodically as the class stores the index information
                   // purging is done so we do not run out of memory 
 
-// ***************************** RaftClient Code *****************************
-
-class RaftClient {
-  public:
-    RaftClient(std::shared_ptr<Channel> channel);
-    int PingOtherServers();
-
-  private:
-    std::unique_ptr<RaftServer::Stub> stub_;
-};
-
-
-RaftClient::RaftClient(std::shared_ptr<Channel> channel)
-  : stub_(RaftServer::NewStub(channel)){}
-
-int RaftClient::PingOtherServers() {
-    printf("Hi in PingOtherServers\n");
-    string target_address(SERVER1);
-    std::unique_ptr<RaftServer::Stub> server1_stub;
-
-    server1_stub = RaftServer::NewStub(grpc::CreateChannel(SERVER1, grpc::InsecureChannelCredentials()));
-	printf("initgRPC: Client is contacting server: %s\n", SERVER1);
-	
-	int ping_time;
-    PingMessage request;
-    PingMessage reply;
-    Status status;
-
-    ClientContext context;
-    status = server1_stub->PingFollower(&context, request, &reply);
-    printf("%d\n", status.ok());
-    if (status.ok())return 0;
-    else return -1;
-}
-
-// ***************************** RaftServer Code *****************************
-
-class dbImpl final : public RaftServer::Service {
-
-public:
-  RaftClient* raftClient;
-  explicit dbImpl() {}
-
-  Status Ping(ServerContext *context, const PingMessage *req, PingMessage *resp) override
-  {
-    printf("Got Pinged\n");
-    raftClient->PingOtherServers();
-    return Status::OK;
-  }
-
-  Status PingFollower(ServerContext *context, const PingMessage *req, PingMessage *resp) override
-  {
-    printf("Got Pinged by other node's client \n");
-    return Status::OK;
-  }
-
-  Status Get(ServerContext *context, const GetRequest *req, GetResponse *resp) override
-  {
-    if(currState!= LEADER){
-      resp->set_value("");
-      resp->set_leaderid(leaderID);
-      return Status(StatusCode::PERMISSION_DENIED, "Server not allowed top perform leader operations");
-    }
-    printf("Get invoked on server\n");
-    string value;
-    string key = req->key();
-    leveldb::Status status = replicateddb->Get(leveldb::ReadOptions(), key, &value);
-    printf("Value: %s\n", value.c_str());
-    resp->set_value(value);
-    return Status::OK;
-  }
-};
-
 // ********************************* Functions ************************************
 
 void setCurrState(State cs)
@@ -325,17 +257,26 @@ void runRaftServer() {
   }
 }
 
-void RunGrpcServer(string server_address) {
-  dbImpl service;
-  ServerBuilder builder;
-  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-  builder.RegisterService(&service);
-  std::unique_ptr<Server> server(builder.BuildAndStart());
-  std::cout << "Server listening on " << server_address << std::endl;
-  server->Wait();
+void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterator logIndex, int leaderCommitIndex){
+  Log logEntry;
+  logs.erase(logIndex, logs.end());
+  for(auto itr = logEntries.begin(); itr != logEntries.end(); itr++){
+    logEntry.index = itr->index(); //change
+    logEntry.term = currentTerm;
+    logEntry.key = itr->key();
+    logEntry.value = itr->value();
+    logs.emplace(logIndex++, logEntry); 
+    // persist in DB
+    leveldb::Status logstatus = plogs->Put(leveldb::WriteOptions(), to_string(logEntry.index), logEntry.toString());
+    // assert(status.ok()); should we add a try:catch here?
+  }
+  // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+  if(leaderCommitIndex > commitIndex)
+    commitIndex = std::min(leaderCommitIndex, logs.empty() ? INT_MAX : logs.back().index);
 }
 
 void openOrCreateDBs() {
+
   leveldb::Options options;
   options.create_if_missing = true;
 
@@ -395,6 +336,196 @@ void initializePersistedValues() {
     }
   }
 }
+
+// ***************************** RaftClient Code *****************************
+
+class RaftClient {
+  public:
+    RaftClient(std::shared_ptr<Channel> channel);
+    int PingOtherServers();
+    int AppendEntries(int, int);
+
+  private:
+    std::unique_ptr<RaftServer::Stub> stub_;
+};
+
+RaftClient::RaftClient(std::shared_ptr<Channel> channel)
+  : stub_(RaftServer::NewStub(channel)){}
+
+int RaftClient::PingOtherServers() {
+    printf("Hi in PingOtherServers\n");
+    string target_address(SERVER1);
+    std::unique_ptr<RaftServer::Stub> server1_stub;
+
+    server1_stub = RaftServer::NewStub(grpc::CreateChannel(SERVER1, grpc::InsecureChannelCredentials()));
+	printf("initgRPC: Client is contacting server: %s\n", SERVER1);
+	
+	int ping_time;
+    PingMessage request;
+    PingMessage reply;
+    Status status;
+
+    ClientContext context;
+    status = server1_stub->PingFollower(&context, request, &reply);
+    printf("%d\n", status.ok());
+    if (status.ok())return 0;
+    else return -1;
+}
+
+int RaftClient::AppendEntries(int logIndex, int lastIndex) {
+  printf("[RaftClient::AppendEntries]\n");
+  AppendEntriesRequest request;
+  AppendEntriesResponse response;
+  Status status;
+  ClientContext context;
+
+  int prevLogIndex = logIndex-1;
+  // from this index + 1
+  auto prevLogIndexIt = logs.begin();
+  // to this index
+  auto lastLogIndexIt = logs.end();
+  for(; prevLogIndexIt != logs.end(); prevLogIndexIt++){
+    if(prevLogIndexIt->index == prevLogIndex){
+      break;
+    }
+  }
+  for(; lastLogIndexIt != prevLogIndexIt; lastLogIndexIt--){
+    if(lastLogIndexIt->index == lastIndex){
+      break;
+    }
+  }
+
+  request.set_term(currentTerm);
+  request.set_leaderid(leaderID);
+  request.set_prevlogindex(prevLogIndex);
+  request.set_prevlogterm(prevLogIndexIt->term);
+  request.set_leadercommitindex(commitIndex);
+
+  // creating log entries to store
+  for (auto nextIdxIt = prevLogIndexIt+1; nextIdxIt != lastLogIndexIt; nextIdxIt++) {
+    db::LogEntry *reqEntry = request.add_entries();
+    reqEntry->set_index(nextIdxIt->index);
+    reqEntry->set_term(nextIdxIt->term);
+    reqEntry->set_key(nextIdxIt->key);
+    reqEntry->set_value(nextIdxIt->value);      
+  }
+
+  response.Clear();
+  status = stub_->AppendEntries(&context, request, &response);
+
+  if (status.ok()) {
+    printf("[RaftClient::AppendEntries] RPC Success\n");
+    if(response.success() == false){
+      if(response.currterm() > currentTerm){
+        printf("[RaftClient::AppendEntries] Higher Term in Response\n");
+        return -3; // leader should convert to follower
+      } else {
+        printf("[RaftClient::AppendEntries] Term mismatch at prevLogIndex. Try with a lower nextIndex.\n");
+        return -2; // decriment nextIndex
+      }
+    }
+  } else {
+    printf("[RaftClient::AppendEntries] RPC Failure\n");
+    return -1;
+  }
+  return 0;
+}
+
+// ***************************** RaftServer Code *****************************
+
+class dbImpl final : public RaftServer::Service {
+
+public:
+  RaftClient* raftClient;
+  explicit dbImpl() {}
+
+  Status Ping(ServerContext *context, const PingMessage *req, PingMessage *resp) override
+  {
+    printf("Got Pinged\n");
+    raftClient->PingOtherServers();
+    return Status::OK;
+  }
+
+  Status PingFollower(ServerContext *context, const PingMessage *req, PingMessage *resp) override
+  {
+    printf("Got Pinged by other node's client \n");
+    return Status::OK;
+  }
+
+  Status AppendEntries(ServerContext *context, const AppendEntriesRequest *request, AppendEntriesResponse *response) override
+  {
+    printf("AppendEntries RPC received \n");
+    //Process Append Entries RPC
+    bool rpcSuccess = false;
+    if(request->term() >= currentTerm){
+      currentTerm = (int)request->term(); // updating current term
+      electionTimer.reset(getRandomTimeout()); //election timer reset
+      currState = FOLLOWER; // candidates become followers
+      electionRunning = false; 
+      
+      int vectorIndex = -1;
+      auto logAtPrevIndex = logs.begin();
+      for(; logAtPrevIndex != logs.end(); logAtPrevIndex++){
+        if(logAtPrevIndex->index == request->prevlogindex()){
+          vectorIndex = logAtPrevIndex - logs.begin();
+          break;
+        }
+      }
+
+      // check if req->prevLogIndex exists in LevelDB
+      bool existsInDB = false;
+      string prevLogFromDB = "";
+      if(vectorIndex == -1){
+        leveldb::Status logstatus = 
+                  plogs->Get(leveldb::ReadOptions(), to_string(request->prevlogindex()), &prevLogFromDB);
+        if(logstatus.ok())
+          existsInDB = true;
+      }
+
+      if((vectorIndex > -1) && (logs[vectorIndex].term == request->prevlogterm()) ||
+        (existsInDB) && (Log(prevLogFromDB).term == request->prevlogterm()))  {
+          //append and change commit index
+          std::vector<db::LogEntry> logEntries(request->entries().begin(), request->entries().end());
+          updateLog(logEntries, logAtPrevIndex+1, request->leadercommitindex());
+          // updateLog should handle db update
+          rpcSuccess = true;
+      }
+    } 
+    response->set_currterm(currentTerm);
+    response->set_success(rpcSuccess);
+    return Status::OK;
+  }
+
+  Status Get(ServerContext *context, const GetRequest *req, GetResponse *resp) override
+  {
+    if(currState!= LEADER){
+      resp->set_value("");
+      resp->set_leaderid(leaderID);
+      return Status(StatusCode::PERMISSION_DENIED, "Server not allowed top perform leader operations");
+    }
+    printf("Get invoked on server\n");
+    string value;
+    string key = req->key();
+    leveldb::Status status = replicateddb->Get(leveldb::ReadOptions(), key, &value);
+    printf("Value: %s\n", value.c_str());
+    resp->set_value(value);
+    return Status::OK;
+  }
+};
+
+// Run main()
+
+void RunGrpcServer(string server_address) {
+  dbImpl service;
+  ServerBuilder builder;
+  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  builder.RegisterService(&service);
+  std::unique_ptr<Server> server(builder.BuildAndStart());
+  std::cout << "Server listening on " << server_address << std::endl;
+  server->Wait();
+}
+
+
 
 int main(int argc, char **argv) {
   if(argc != 3) {
