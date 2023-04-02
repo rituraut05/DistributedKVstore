@@ -69,7 +69,6 @@ using db::GetResponse;
 #define MIN_ELECTION_TIMEOUT   150
 #define MAX_ELECTION_TIMEOUT   300
 #define HEARTBEAT_TIMEOUT      70
-#define SERVER_CNT             5
 
 // Move to file with server configs and read from there upon start
 
@@ -324,30 +323,39 @@ void runRaftServer() {
     }
   }
 }
-
+std::unique_ptr<Server> server;
 void RunGrpcServer(string server_address) {
   dbImpl service;
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
-  std::unique_ptr<Server> server(builder.BuildAndStart());
+
+  server = builder.BuildAndStart();
   std::cout << "Server listening on " << server_address << std::endl;
-  server->Wait();
+  std::unique_ptr<std::thread> worker(new std::thread([&]
+  {
+    server->Wait();
+  }));
+
+  if (worker->joinable())
+  {
+      worker->join();
+  }
 }
 
 void openOrCreateDBs() {
   leveldb::Options options;
   options.create_if_missing = true;
 
-  leveldb::Status plogs_status = leveldb::DB::Open(options, "/tmp/plogs", &plogs);
+  leveldb::Status plogs_status = leveldb::DB::Open(options, "/tmp/plogs" + to_string(serverID), &plogs);
   if (!plogs_status.ok()) std::cerr << plogs_status.ToString() << endl;
   assert(plogs_status.ok());
 
-  leveldb::Status pmetadata_status = leveldb::DB::Open(options, "/tmp/pmetadata", &pmetadata);
+  leveldb::Status pmetadata_status = leveldb::DB::Open(options, "/tmp/pmetadata" + to_string(serverID), &pmetadata);
   if(!pmetadata_status.ok()) std::cerr << pmetadata_status.ToString() << endl;
   assert(pmetadata_status.ok());
 
-  leveldb::Status replicateddb_status = leveldb::DB::Open(options, "/tmp/replicateddb", &replicateddb);
+  leveldb::Status replicateddb_status = leveldb::DB::Open(options, "/tmp/replicateddb" + to_string(serverID), &replicateddb);
   if(!replicateddb_status.ok()) std::cerr << replicateddb_status.ToString() << endl;
   assert(replicateddb_status.ok());
 }
@@ -404,7 +412,8 @@ int main(int argc, char **argv) {
 
   // initialize values 
   serverID = atoi(argv[1]);
-  if(serverID == leaderID){
+
+  if(serverID == leaderID){ // REMOVE LATER
     setCurrState(LEADER);
   }else{
     setCurrState(FOLLOWER);
@@ -418,19 +427,20 @@ int main(int argc, char **argv) {
   // read from persisted variables
   initializePersistedValues();
 
-  // test log class - remove later
+  // test log class - REMOVE LATER
   Log l("1;1;name;Snehal");
   cout << l.index << " " << l.term << " " << l.key << " " << l.value << endl;
   cout << l.toString() << endl;  
 
+  //test get operation related operations - REMOVE LATER
+  replicateddb->Put(leveldb::WriteOptions(), "name", "Ritu");
   // initialize channels to servers
 
   // Run threads
-  thread raftGrpcServer(RunGrpcServer, argv[2]);
+  RunGrpcServer(argv[2]);
   thread logExecutor(executeLog);
   thread raftServer(runRaftServer);
 
-  raftGrpcServer.join();
   logExecutor.join();
   raftServer.join();
   return 0;
