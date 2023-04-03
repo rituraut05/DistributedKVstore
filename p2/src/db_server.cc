@@ -355,7 +355,7 @@ void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterato
   logs.erase(logIndex, logs.end());
   for(auto itr = logEntries.begin(); itr != logEntries.end(); itr++){
     logEntry.index = itr->index(); //change
-    logEntry.term = currentTerm;
+    logEntry.term = itr->term();
     logEntry.key = itr->key();
     logEntry.value = itr->value();
     logs.emplace(logIndex++, logEntry); 
@@ -545,7 +545,7 @@ public:
 
   Status AppendEntries(ServerContext *context, const AppendEntriesRequest *request, AppendEntriesResponse *response) override
   {
-    printf("AppendEntries RPC received \n");
+    printf("[AppendEntries RPC] received \n");
     //Process Append Entries RPC
     bool rpcSuccess = false;
     if(request->term() >= currentTerm){
@@ -555,9 +555,10 @@ public:
       electionRunning = false; 
       
       int vectorIndex = -1;
-      auto logAtPrevIndex = logs.begin();
-      for(; logAtPrevIndex != logs.end(); logAtPrevIndex++){
-        if(logAtPrevIndex->index == request->prevlogindex()){
+      auto logAtPrevIndex = --logs.begin();
+      for(auto iter = logs.begin(); iter != logs.end(); iter++){
+        if(iter->index == request->prevlogindex()){
+          logAtPrevIndex = iter;
           vectorIndex = logAtPrevIndex - logs.begin();
           break;
         }
@@ -573,11 +574,12 @@ public:
           existsInDB = true;
       }
 
-      if((vectorIndex > -1) && (logs[vectorIndex].term == request->prevlogterm()) ||
+      if((request->prevlogindex() == 0) || 
+        (vectorIndex > -1) && (logs[vectorIndex].term == request->prevlogterm()) ||
         (existsInDB) && (Log(prevLogFromDB).term == request->prevlogterm()))  {
           //append and change commit index
           std::vector<db::LogEntry> logEntries(request->entries().begin(), request->entries().end());
-          updateLog(logEntries, logAtPrevIndex+1, request->leadercommitindex());
+          updateLog(logEntries, ++logAtPrevIndex, request->leadercommitindex());
           // updateLog should handle db update
           rpcSuccess = true;
       }
