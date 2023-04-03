@@ -278,7 +278,7 @@ public:
     while(commitIndex< lli){
       printf("Waiting for commitIndex: %d == lastLogIndex: %d\n", commitIndex, lli);
     }
-    printf("[Put] Success: (%s, %s) log committed\n", key, value);
+    printf("[Put] Success: (%s, %s) log committed\n", key.c_str(), value.c_str());
 
     resp->set_leaderid(leaderID);
     return Status::OK;
@@ -299,13 +299,58 @@ int getRandomTimeout() {
   return distribution(generator);
 }
 
+// hardcoded for testing executeLog: REMOVE LATER
+void testExecuteLog(){
+  printf("in testExecuteLog\n");
+  Log logEntryOne = Log(1, currentTerm, "key1", "value1");
+  Log logEntryTwo = Log(1, currentTerm, "key2", "value2");
+  Log logEntryThree = Log(1, currentTerm, "key3", "value3");
+  logs.push_back(logEntryOne);
+  logs.push_back(logEntryTwo);
+  logs.push_back(logEntryThree); 
+  commitIndex = 4;
+  lastApplied = 0;
+}
+
 void executeLog() {
+  testExecuteLog();
+  int i=0;
   while(true) {
+    i++;
     if(lastApplied < commitIndex) {
       lastApplied++;
-      printf("Executing Log: %d\n", lastApplied);
-      // Execute log at index lastApplied here 
-      // Decrement lastApplied back to original value if there was a failure
+      printf("[ExecuteLog]: Executing log from index: %d\n", lastApplied); 
+      
+      // find lastApplied index in logs
+      auto i = logs.begin();
+      for(; i!=logs.end(); i++){
+        if(i->index == lastApplied){
+          break;
+        }
+      }
+
+      // This can happen when we have erased till min(matchIndex) which have not yet applied
+      if(i== logs.end()){
+        printf("[ExecuteLog]: Unable to find %d index in logs\n", lastApplied);
+        continue;
+        // TODO: if such case arises. Find in DB as well.
+      }
+
+      while(i->index < commitIndex) {
+        // put to replicateddb
+        leveldb::Status status = replicateddb->Put(leveldb::WriteOptions(), i->key, i->value);
+        if(!status.ok()){
+          lastApplied--;
+          printf("[ExecuteLog]: Failure while put in replicated db %s\n", status.ToString().c_str());
+          pmetadata->Put(leveldb::WriteOptions(), "lastApplied", to_string(lastApplied));
+          break;
+        }
+        pmetadata->Put(leveldb::WriteOptions(), "lastApplied", to_string(lastApplied));
+        lastApplied++;
+        i++;
+      }
+    }else if(i%100==0){
+      printf("[ExecuteLog]: Logs are up to date.\n");
     }
   }
 }
@@ -461,6 +506,12 @@ void initializePersistedValues() {
   }
 }
 
+void testPut(){
+  currentTerm++;
+  Log logEntryOne = Log(0, currentTerm, "name", "Ritu"); // need something at index = 0?
+  logs.push_back(logEntryOne); // hardcoded for testing put: REMOVE LATER
+}
+
 int main(int argc, char **argv) {
   if(argc != 3) {
     printf("Usage: ./db_server <serverID> <server address>\n");
@@ -491,16 +542,15 @@ int main(int argc, char **argv) {
 
   //test get operation related operations - REMOVE LATER
   replicateddb->Put(leveldb::WriteOptions(), "name", "Ritu");
-  currentTerm++;
-  Log logEntryOne = Log(1, currentTerm, "name", "Ritu");
-  logs.push_back(logEntryOne); // hardcoded for testing put: REMOVE LATER
+
+  testPut();
 
   // initialize channels to servers
 
   // Run threads
-  RunGrpcServer(argv[2]);
   thread logExecutor(executeLog);
   thread raftServer(runRaftServer);
+  RunGrpcServer(argv[2]);
 
   logExecutor.join();
   raftServer.join();
