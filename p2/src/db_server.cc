@@ -128,15 +128,32 @@ class Log {
     }
 };
 
+// ************************ RaftClient class definition *********************
+
+class RaftClient {
+  public:
+    RaftClient(std::shared_ptr<Channel> channel);
+    int PingOtherServers();
+    int AppendEntries(int, int);
+
+  private:
+    std::unique_ptr<RaftServer::Stub> stub_;
+};
+
 // ***************************** Volatile Variables **************************
 int serverID;
-int leaderID = 0;
+int leaderID = -1;
 
 State currState;
-int commitIndex = 0; // index starts from 1
+int commitIndex = 0; // valid index starts from 1
+int lastLogIndex = 0; // valid index starts from 1
+int nextIndex[SERVER_CNT];
+int matchIndex[SERVER_CNT];
 Timer electionTimer(1, MAX_ELECTION_TIMEOUT);
 Timer heartbeatTimer(1, HEARTBEAT_TIMEOUT);
 bool electionRunning = false;
+bool appendEntriesRunning[SERVER_CNT];
+RaftClient* clients[SERVER_CNT];
 
 /*
 * logs are stored as key - value pairs in plogs with
@@ -172,6 +189,15 @@ int getRandomTimeout() {
   default_random_engine generator(seed);
   uniform_int_distribution<int> distribution(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT);
   return distribution(generator);
+}
+
+bool greaterThanMajority(int arr[], int N) {
+  int majcnt = ceil(SERVER_CNT/2);
+  for(int i = 0; i<SERVER_CNT; i++) {
+    if(arr[i] >= N) majcnt--;
+  }
+  if(majcnt > 0) return false;
+  return true;
 }
 
 void executeLog() {
@@ -212,16 +238,45 @@ void runHeartbeatTimer() {
   heartbeatTimer.start(HEARTBEAT_TIMEOUT);
   while(heartbeatTimer.running() &&
     heartbeatTimer.get_tick() < heartbeatTimer._timeout) ; // spin
-  // printf("[runHeartbeatTimer] Spun for %d ms before timing out to send heartbeat in term %d\n", heartbeatTimer.get_tick(), currentTerm);
-  // sendHeartbeat();
+  printf("[runHeartbeatTimer] Spun for %d ms before timing out to send heartbeat in term %d\n", heartbeatTimer.get_tick(), currentTerm);
+  // sendHearbeat();
   runHeartbeatTimer();
+}
+
+void invokeAppendEntries(int followerid) {
+  while(true) {
+    if(followerid == serverID) matchIndex[followerid] = lastLogIndex;
+    if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
+      int lastidx = lastLogIndex;
+      int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
+      if(ret == 0) { // success
+        nextIndex[followerid] = lastidx + 1;
+        matchIndex[followerid] = lastidx;
+      }
+      if(ret == -2) { // log inconsistency
+        nextIndex[followerid]--;
+      }
+      if(ret == -3) { // term of follower bigger, convert to follower
+        pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
+        setCurrState(FOLLOWER);
+        break;
+      }
+    }
+  }
 }
 
 void runRaftServer() {
   thread electionTimerThread;
   thread heartbeatTimerThread;
+  thread appendEntriesThreads[SERVER_CNT];
   while(true) {
     if(currState == FOLLOWER) {
+      for(int i = 0; i<SERVER_CNT; i++) {
+        if(appendEntriesRunning[i]) {
+          appendEntriesRunning[i] = false;
+          appendEntriesThreads[i].join();
+        }
+      }
       if(heartbeatTimer.running()) {
         heartbeatTimer.set_running(false);
         heartbeatTimerThread.join();
@@ -233,6 +288,12 @@ void runRaftServer() {
       }
     }
     if(currState == CANDIDATE) {
+      for(int i = 0; i<SERVER_CNT; i++) {
+        if(appendEntriesRunning[i]) {
+          appendEntriesRunning[i] = false;
+          appendEntriesThreads[i].join();
+        }
+      }
       if(heartbeatTimer.running()) {
         heartbeatTimer.set_running(false);
         heartbeatTimerThread.join();
@@ -251,6 +312,28 @@ void runRaftServer() {
       if(!heartbeatTimer.running()) {
         heartbeatTimer.set_running(true);
         heartbeatTimerThread = thread { runHeartbeatTimer };
+      }
+      // init values and invoke append entries
+      for(int i = 0; i<SERVER_CNT; i++) {
+        if(!appendEntriesRunning[i]) {
+          nextIndex[i] = lastLogIndex + 1;
+          if(i == serverID) matchIndex[i] = lastLogIndex;
+          else matchIndex[i] = 0;
+          appendEntriesRunning[i] = true;
+          appendEntriesThreads[i] = thread(invokeAppendEntries, i);
+        }
+      }
+      // check and update commit index 
+      for(int N = lastLogIndex; N>commitIndex; N--) {
+        auto NLogIndexIt = logs.end();
+        for(; NLogIndexIt != logs.begin(); NLogIndexIt--) {
+          if(NLogIndexIt->index == N) break;
+        }
+        if(greaterThanMajority(matchIndex, N) && NLogIndexIt->term == currentTerm) {
+          printf("[runRaftServer] LEADER: Commiting index = %d\n", N);
+          commitIndex = N;
+          break;
+        }
       }
     }
   }
@@ -275,21 +358,23 @@ void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterato
 }
 
 void openOrCreateDBs() {
-
   leveldb::Options options;
   options.create_if_missing = true;
 
   leveldb::Status plogs_status = leveldb::DB::Open(options, "/tmp/plogs" + to_string(serverID), &plogs);
   if (!plogs_status.ok()) std::cerr << plogs_status.ToString() << endl;
   assert(plogs_status.ok());
+  printf("[openOrCreateDBs] Successfully opened plogs DB.\n");
 
   leveldb::Status pmetadata_status = leveldb::DB::Open(options, "/tmp/pmetadata" + to_string(serverID), &pmetadata);
   if(!pmetadata_status.ok()) std::cerr << pmetadata_status.ToString() << endl;
   assert(pmetadata_status.ok());
+  printf("[openOrCreateDBs] Successfully opened pmetadata DB.\n");
 
   leveldb::Status replicateddb_status = leveldb::DB::Open(options, "/tmp/replicateddb" + to_string(serverID), &replicateddb);
   if(!replicateddb_status.ok()) std::cerr << replicateddb_status.ToString() << endl;
   assert(replicateddb_status.ok());
+  printf("[openOrCreateDBs] Successfully opened replicateddb DB.\n");
 }
 
 void initializePersistedValues() {
@@ -320,7 +405,6 @@ void initializePersistedValues() {
     printf("[initializePersistedValues] votedFor = %d\n", votedFor);
   }
 
-  // get persisted logs from plogs and initialize
   int logidx = 1;
   while(true) {
     string logString = "";
@@ -334,19 +418,11 @@ void initializePersistedValues() {
       break;
     }
   }
+  lastLogIndex = logidx - 1;
+  printf("[initializePersistedValues] Loaded logs till index = %d\n", lastLogIndex);
 }
 
 // ***************************** RaftClient Code *****************************
-
-class RaftClient {
-  public:
-    RaftClient(std::shared_ptr<Channel> channel);
-    int PingOtherServers();
-    int AppendEntries(int, int);
-
-  private:
-    std::unique_ptr<RaftServer::Stub> stub_;
-};
 
 RaftClient::RaftClient(std::shared_ptr<Channel> channel)
   : stub_(RaftServer::NewStub(channel)){}
@@ -543,13 +619,9 @@ int main(int argc, char **argv) {
 
   // initialize values 
   serverID = atoi(argv[1]);
+  setCurrState(FOLLOWER);
+  // setCurrState(LEADER);
 
-  if(serverID == leaderID){ // REMOVE LATER
-    setCurrState(LEADER);
-  }else{
-    setCurrState(FOLLOWER);
-  }
-  
   electionTimer.set_running(false);
   heartbeatTimer.set_running(false); 
 
@@ -558,14 +630,20 @@ int main(int argc, char **argv) {
   // read from persisted variables
   initializePersistedValues();
 
-  // test log class - REMOVE LATER
-  Log l("1;1;name;Snehal");
-  cout << l.index << " " << l.term << " " << l.key << " " << l.value << endl;
-  cout << l.toString() << endl;  
+  for(int i = 0; i<SERVER_CNT; i++) {
+    nextIndex[i] = lastLogIndex + 1;
+    if(i == serverID) matchIndex[i] = lastLogIndex;
+    else matchIndex[i] = 0;
+  }
 
   //test get operation related operations - REMOVE LATER
   replicateddb->Put(leveldb::WriteOptions(), "name", "Ritu");
   // initialize channels to servers
+  for(int i = 0; i<SERVER_CNT; i++) {
+    if(i != serverID) {
+      clients[i] = new RaftClient(grpc::CreateChannel(serverIPs[i], grpc::InsecureChannelCredentials()));
+    }
+  }
 
   // Run threads
   RunGrpcServer(argv[2]);
