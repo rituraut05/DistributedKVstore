@@ -192,7 +192,7 @@ int getRandomTimeout() {
 }
 
 bool greaterThanMajority(int arr[], int N) {
-  int majcnt = ceil(SERVER_CNT/2);
+  int majcnt = (SERVER_CNT+1)/2;
   for(int i = 0; i<SERVER_CNT; i++) {
     if(arr[i] >= N) majcnt--;
   }
@@ -249,7 +249,7 @@ void invokeAppendEntries(int followerid) {
     if(followerid == serverID) matchIndex[followerid] = lastLogIndex;
     if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
       int lastidx = lastLogIndex;
-      printf("[invokeAppendEntries] Invoking AppendEntries for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
+      // printf("[invokeAppendEntries] Invoking AppendEntries for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
       int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
       if(ret == 0) { // success
         printf("[invokeAppendEntries] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
@@ -331,7 +331,7 @@ void runRaftServer() {
           if(i == serverID) matchIndex[i] = lastLogIndex;
           else matchIndex[i] = 0;
           appendEntriesRunning[i] = true;
-          appendEntriesThreads[i] = thread(invokeAppendEntries, i);
+          appendEntriesThreads[i] = thread { invokeAppendEntries, i };
         }
       }
       // check and update commit index 
@@ -459,7 +459,7 @@ int RaftClient::PingOtherServers() {
 }
 
 int RaftClient::AppendEntries(int logIndex, int lastIndex) {
-  printf("[RaftClient::AppendEntries]\n");
+  // printf("[RaftClient::AppendEntries]Entering\n");
   AppendEntriesRequest request;
   AppendEntriesResponse response;
   Status status;
@@ -470,13 +470,16 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
   auto prevLogIndexIt = logs.begin();
   // to this index
   auto lastLogIndexIt = logs.end();
-  for(; prevLogIndexIt != logs.end(); prevLogIndexIt++){
-    if(prevLogIndexIt->index == prevLogIndex){
+  for(auto iter = logs.begin(); iter != logs.end(); iter++){
+    if(iter->index == prevLogIndex) {
+      prevLogIndexIt = iter;
       break;
     }
   }
-  for(; lastLogIndexIt != prevLogIndexIt; lastLogIndexIt--){
-    if(lastLogIndexIt->index == lastIndex){
+
+  for(auto iter = logs.end(); iter != prevLogIndexIt; iter--){
+    if(iter->index == lastIndex){
+      lastLogIndexIt = ++iter;
       break;
     }
   }
@@ -488,7 +491,8 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
   request.set_leadercommitindex(commitIndex);
 
   // creating log entries to store
-  for (auto nextIdxIt = prevLogIndexIt+1; nextIdxIt != lastLogIndexIt; nextIdxIt++) {
+
+  for (auto nextIdxIt = ++prevLogIndexIt; nextIdxIt != lastLogIndexIt; nextIdxIt++) {
     db::LogEntry *reqEntry = request.add_entries();
     reqEntry->set_index(nextIdxIt->index);
     reqEntry->set_term(nextIdxIt->term);
@@ -618,9 +622,11 @@ int main(int argc, char **argv) {
 
   // initialize values 
   serverID = atoi(argv[1]);
-  if(serverID == 0) setCurrState(LEADER);
-  else setCurrState(FOLLOWER);
-  // setCurrState(FOLLOWER);
+  // if(serverID == 0) {
+  //   setCurrState(LEADER); 
+  // }
+  // else setCurrState(FOLLOWER);
+  setCurrState(FOLLOWER);
 
   electionTimer.set_running(false);
   heartbeatTimer.set_running(false); 
