@@ -226,6 +226,7 @@ void runElectionTimer() {
   votedFor = -1;
   pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(votedFor));
   int timeout = getRandomTimeout();
+  printf("[runElectionTimer] Getting random timeout %d\n", timeout);
   electionTimer.start(timeout);
   while(electionTimer.running() && 
     electionTimer.get_tick() < electionTimer._timeout) ; // spin
@@ -288,7 +289,7 @@ void runRaftServer() {
       }
       if(!electionTimer.running()) {
         printf("[runRaftServer] In FOLLOWER, starting election timer.\n");
-        electionTimerThread.join();
+        if(electionTimerThread.joinable()) electionTimerThread.join();
         electionTimer.set_running(true);
         electionTimerThread = thread { runElectionTimer };
       }
@@ -307,7 +308,7 @@ void runRaftServer() {
       }
       if(!electionRunning) {
         printf("[runRaftServer] In CANDIDATE, starting election timer.\n");
-        electionTimerThread.join();
+        if(electionTimerThread.joinable()) electionTimerThread.join();
         electionTimer.set_running(true);
         electionTimerThread = thread { runElectionTimer };
       }
@@ -599,16 +600,13 @@ public:
   }
 };
 
-// Run main()
-std::unique_ptr<Server> server;
 void RunGrpcServer(string server_address) {
   dbImpl service;
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
-
-  server = builder.BuildAndStart();
-  std::cout << "Server listening on " << server_address << std::endl;
+  std::unique_ptr<Server> server = builder.BuildAndStart();
+  std::cout << "[RunGrpcServer] Server listening on " << server_address << std::endl;
   server->Wait();
 }
 
