@@ -196,6 +196,103 @@ int DbClient::Get(string key, string value) {
 }
 
 
+int DbClient::Put(string key, string value) {
+    printf("[Put]: Invoked;\n");
+
+    PutRequest req;
+    PutResponse res;
+    Status status;
+
+    // ClientContext context;
+    req.set_key(key);
+    req.set_value(value);
+    res.Clear();
+
+    bool leaderFound = false;
+    int maxRetries = 2;
+    int retries[SERVER_CNT];
+    for(int i=0; i<SERVER_CNT; i++){
+        retries[i] = maxRetries;
+    }
+
+    for(int id = 0; id < SERVER_CNT && !leaderFound; id++){
+        if(retries[id] == 0){
+            continue; // try next server if the max retries for server with id are completed.
+        }
+        ServerStub stub = initConnection(id);
+        ClientContext context;
+        res.Clear();
+
+        status = stub->Put(&context, req, &res);
+        printf("Status: %d\n", status.ok());
+
+        if (status.ok()) { // the request was called on leader
+            int server_errno = res.db_errno();
+            if (server_errno) {
+                if(server_errno == EPERM) { // req called on follower
+                    if(res.leaderid() >=0 && res.leaderid()<5){ // correct leaderID returned by follower
+                        leaderFound = true;
+                        leaderID = res.leaderid(); // set correct leaderID which was returned by follower
+                        printf("ServerID = %d, leaderID sent by follower: %d \n", id, res.leaderid());
+                        break; // break to call Put on the correct leaderID
+                    }
+                    continue; // leaderID was not correctly returned by follower so try Put on the next server
+                }
+                printf("[Put]: Error %d on server.\n", server_errno);
+                printf("[Put]: Function ended due to server failure.\n");
+                errno = server_errno;
+                return -1;
+            }
+
+            // value = res.value();
+            // printf("Value: %s\n", value.c_str());
+            printf("leaderID: %d\n", res.leaderid());
+            
+            printf("[Put]: Function ended;\n");
+            return 0;
+        } else { // either req did not successfully run on leader or req called on follower
+            errno = RPCstatusCode(status.error_code());
+            
+            if(errno == ETIMEDOUT){ // server called was unavailable, retry
+                printf("Server %d not available\n", id);
+                retries[id]--;
+                id--;
+                continue;
+            }
+            // failure in executing RPC on leader or follower
+            printf("[Put]: RPC failure\n");
+            return -1;
+        }
+    }
+
+    if(leaderFound) {
+        ServerStub stub = initConnection(leaderID);
+        ClientContext context;
+        status = stub->Put(&context, req, &res);
+
+        if (status.ok()) {
+            int server_errno = res.db_errno();
+            if (server_errno) {
+                printf("[Put]: Error %d on server.\n", server_errno);
+                printf("[Put]: Function ended due to server failure.\n");
+                errno = server_errno;
+                return -1;
+            }
+            
+            printf("[Put]: Function ended;\n");
+            return 0;
+        } else {
+            errno = RPCstatusCode(status.error_code());
+            printf("[Put]: RPC failure\n");
+            return -1;
+        }
+    } else {
+        printf("Leader not Found\n");
+        return -1;
+    }
+
+}
+
 int main(int argc, char **argv)
 {
     string key, value;
@@ -209,6 +306,7 @@ int main(int argc, char **argv)
     else if(argc == 3){
         key = argv[1];
         value = argv[2];
+        int err = client->Put(key, value);
     }else{
         printf("Usage:\nTo get value from db:\n ./db_client <key> \nTo put key value pair in db:\n ./db_client <key> <value>\n");
         return 0;

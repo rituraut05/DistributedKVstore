@@ -7,6 +7,8 @@ using grpc::Channel;
 using db::RaftServer;
 using db::GetRequest;
 using db::GetResponse;
+using db::PutRequest;
+using db::PutResponse;
 using grpc::Status;
 using grpc::StatusCode;
 
@@ -18,6 +20,7 @@ class DbClient {
     DbClient();
     int Ping(int * round_trip_time);
     int Get(string key, string value);
+    int Put(string key, string value);
     
     
 

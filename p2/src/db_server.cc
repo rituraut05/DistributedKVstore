@@ -65,6 +65,8 @@ using db::RaftServer;
 using db::PingMessage;
 using db::GetRequest;
 using db::GetResponse;
+using db::PutRequest;
+using db::PutResponse;
 
 #define MIN_ELECTION_TIMEOUT   150
 #define MAX_ELECTION_TIMEOUT   300
@@ -104,6 +106,12 @@ class Log {
     string value;
 
     Log() {}
+    Log(int index, int term, string key, string value){
+      this->index = index;
+      this->term = term;
+      this->key = key;
+      this->value = value;
+    }
 
     // log string is of the format- index;term;key;value
     Log(string logString) {
@@ -130,6 +138,7 @@ uint32_t leaderID = 0;
 
 State currState;
 int commitIndex = 0; // index starts from 1
+int lastLogIndex = 0; // index starts from 1 
 Timer electionTimer(1, MAX_ELECTION_TIMEOUT);
 Timer heartbeatTimer(1, HEARTBEAT_TIMEOUT);
 bool electionRunning = false;
@@ -215,14 +224,13 @@ public:
   Status Get(ServerContext *context, const GetRequest *req, GetResponse *resp) override
   {
     printf("Get request invoked on %s\n", stateNames[currState].c_str());
-    resp->Clear();
     if(currState!= LEADER){
       resp->set_value("");
       printf("Setting leaderID to %d\n", leaderID);
       resp->set_leaderid(leaderID);
       resp->set_db_errno(EPERM);
 
-      printf("LEADER ID Set in response: %d\n",resp->leaderid());
+      printf("leaderID Set in response: %d\n",resp->leaderid());
       return Status::OK;
     }
     printf("Get invoked on server\n");
@@ -231,6 +239,47 @@ public:
     leveldb::Status status = replicateddb->Get(leveldb::ReadOptions(), key, &value);
     printf("Value: %s\n", value.c_str());
     resp->set_value(value);
+    resp->set_leaderid(leaderID);
+    return Status::OK;
+  }
+
+  Status Put(ServerContext *context, const PutRequest *req, PutResponse *resp) override
+  {
+    printf("Put request invoked on %s\n", stateNames[currState].c_str());
+    if(currState!= LEADER){
+      printf("Setting leaderID to %d\n", leaderID);
+      resp->set_leaderid(leaderID);
+      resp->set_db_errno(EPERM);
+
+      printf("leaderID Set in response: %d\n",resp->leaderid());
+      return Status::OK;
+    }
+
+    string value = req->value();
+    string key = req->key();
+
+    Log logEntry;
+
+    std::shared_mutex mutex;
+    int lli = lastLogIndex;
+    
+    
+    mutex.lock();
+    logEntry.index = logs.back().index+1;
+    logEntry.term = currentTerm;
+    logEntry.key = key;
+    logEntry.value = value;
+
+    logs.push_back(logEntry);
+    lli = logEntry.index;
+    lastLogIndex = logEntry.index;
+    mutex.unlock();
+
+    while(commitIndex< lli){
+      printf("Waiting for commitIndex: %d == lastLogIndex: %d\n", commitIndex, lli);
+    }
+    printf("[Put] Success: (%s, %s) log committed\n", key, value);
+
     resp->set_leaderid(leaderID);
     return Status::OK;
   }
@@ -442,6 +491,10 @@ int main(int argc, char **argv) {
 
   //test get operation related operations - REMOVE LATER
   replicateddb->Put(leveldb::WriteOptions(), "name", "Ritu");
+  currentTerm++;
+  Log logEntryOne = Log(1, currentTerm, "name", "Ritu");
+  logs.push_back(logEntryOne); // hardcoded for testing put: REMOVE LATER
+
   // initialize channels to servers
 
   // Run threads
