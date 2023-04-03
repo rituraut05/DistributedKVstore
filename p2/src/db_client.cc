@@ -43,7 +43,7 @@ using db::PingMessage;
 #define SERVER_ADDR           "0.0.0.0:50052"
 typedef std::unique_ptr<RaftServer::Stub> ServerStub;
 
-int leaderID = 0; // hardcoded leaderID for now, should remove.
+uint32_t leaderID = 0; // hardcoded leaderID for now, should remove.
 DbClient::DbClient(std::shared_ptr<Channel> channel)
     : stub_(RaftServer::NewStub(channel))
 {
@@ -56,10 +56,11 @@ DbClient::DbClient()
 
 /********************* Helper Functions **************************************/
 ServerStub initConnection(int id){
+    printf("Init connection %d\n", id);
     ServerStub stub;
-    stub = RaftServer::NewStub(grpc::CreateChannel(SERVER1, grpc::InsecureChannelCredentials()));
+    stub = RaftServer::NewStub(grpc::CreateChannel(serverIPs[id], grpc::InsecureChannelCredentials()));
 
-	printf("initgRPC: Client is contacting server: %s\n", SERVER1);
+	printf("initgRPC: Client is contacting server: %s\n", serverIPs[id].c_str());
     return stub;
 }
 
@@ -85,38 +86,113 @@ int DbClient::Ping(int* round_trip_time)
     }
 }
 
-int DbClient::Get(string key, string* value) {
+/*
+Test Cases:
+1. leader = 0, (server 0 up) client calls it in first go and gets positive response 
+2. leader = 1, (servers 0, 1 up) client calls 0 then 0 redirects to 1, in the next trial calls get on leader server 1. 
+3. leader = 2, (servers 0, 2 up) client calls 0 then 0 redirects to 2, in the next trial calls get on leader server 2.
+4. leader = 2, (servers 1, 2 up) clients calls 0 twice, max retries exhausted, calls 1, 1 redirects to leader 2, client then calls 2
+5. leader = 0 (servers 1 up) client calls 0 twice, then calls 1, redirects to 0, try again once just in case leader = 0 has been elected and up during that time.
+6. leader = 1 
+
+*/
+
+int DbClient::Get(string key, string value) {
     printf("[Get]: Invoked;\n");
 
     GetRequest req;
     GetResponse res;
     Status status;
 
-    ClientContext context;
+    // ClientContext context;
     req.set_key(key);
     res.Clear();
 
-    ServerStub stub = initConnection(leaderID);
-    status = stub->Get(&context, req, &res);
+    bool leaderFound = false;
+    int maxRetries = 2;
+    int retries[SERVER_CNT];
+    for(int i=0; i<SERVER_CNT; i++){
+        retries[i] = maxRetries;
+    }
 
-    if (status.ok()) {
-        int server_errno = res.db_errno();
-        if (server_errno) {
-            printf("[Get]: Error %d on server.\n", server_errno);
-            printf("[Get]: Function ended due to server failure.\n");
-            errno = server_errno;
+    for(int id = 0; id < SERVER_CNT && !leaderFound; id++){
+        if(retries[id] == 0){
+            continue; // try next server if the max retries for server with id are completed.
+        }
+        ServerStub stub = initConnection(id);
+        ClientContext context;
+        res.Clear();
+
+        status = stub->Get(&context, req, &res);
+        printf("Status: %d\n", status.ok());
+
+        if (status.ok()) { // the request was called on leader
+            int server_errno = res.db_errno();
+            if (server_errno) {
+                if(server_errno == EPERM) { // req called on follower
+                    if(res.leaderid() >=0 && res.leaderid()<5){ // correct leaderID returned by follower
+                        leaderFound = true;
+                        leaderID = res.leaderid(); // set correct leaderID which was returned by follower
+                        printf("ServerID = %d, leaderID sent by follower: %d \n", id, res.leaderid());
+                        break; // break to call get on the correct leaderID
+                    }
+                    continue; // leaderID was not correctly returned by follower so try get on the next server
+                }
+                printf("[Get]: Error %d on server.\n", server_errno);
+                printf("[Get]: Function ended due to server failure.\n");
+                errno = server_errno;
+                return -1;
+            }
+
+            value = res.value();
+            printf("Value: %s\n", value.c_str());
+            printf("leaderID: %d\n", res.leaderid());
+            
+            printf("[Get]: Function ended;\n");
+            return 0;
+        } else { // either req did not successfully run on leader or req called on follower
+            errno = RPCstatusCode(status.error_code());
+            
+            if(errno == ETIMEDOUT){ // server called was unavailable, retry
+                printf("Server %d not available\n", id);
+                retries[id]--;
+                id--;
+                continue;
+            }
+            // failure in executing RPC on leader or follower
+            printf("[Get]: RPC failure\n");
             return -1;
         }
-        // value = &res.value();
-        printf("%s\n", res.value().c_str());
-        
-        printf("[Get]: Function ended;\n");
-        return 0;
+    }
+
+    if(leaderFound) {
+        ServerStub stub = initConnection(leaderID);
+        ClientContext context;
+        status = stub->Get(&context, req, &res);
+
+        if (status.ok()) {
+            int server_errno = res.db_errno();
+            if (server_errno) {
+                printf("[Get]: Error %d on server.\n", server_errno);
+                printf("[Get]: Function ended due to server failure.\n");
+                errno = server_errno;
+                return -1;
+            }
+            value = res.value();
+            printf("Value: %s\n", value.c_str());
+            
+            printf("[Get]: Function ended;\n");
+            return 0;
+        } else {
+            errno = RPCstatusCode(status.error_code());
+            printf("[Get]: RPC failure\n");
+            return -1;
+        }
     } else {
-        errno = RPCstatusCode(status.error_code());
-        printf("[Get]: RPC failure\n");
+        printf("Leader not Found\n");
         return -1;
     }
+
 }
 
 
@@ -128,7 +204,7 @@ int main(int argc, char **argv)
     if(argc == 2){
         key = argv[1];
         string val;
-        client->Get(key, &val);
+        int err = client->Get(key, val);
     }
     else if(argc == 3){
         key = argv[1];

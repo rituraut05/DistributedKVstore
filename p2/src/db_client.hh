@@ -17,7 +17,7 @@ class DbClient {
     DbClient(std::shared_ptr<Channel> channel);
     DbClient();
     int Ping(int * round_trip_time);
-    int Get(string key, string* value);
+    int Get(string key, string value);
     
     
 

@@ -76,6 +76,7 @@ using db::GetResponse;
 
 // ***************************** State enum **********************************
 enum State {FOLLOWER, CANDIDATE, LEADER};
+string stateNames[3] = {"FOLLOWER", "CANDIDATE", "LEADER"};
 
 // ***************************** Log class ***********************************
 
@@ -125,7 +126,7 @@ class Log {
 
 // ***************************** Volatile Variables **************************
 int serverID;
-int leaderID = 0;
+uint32_t leaderID = 0;
 
 State currState;
 int commitIndex = 0; // index starts from 1
@@ -213,10 +214,16 @@ public:
 
   Status Get(ServerContext *context, const GetRequest *req, GetResponse *resp) override
   {
+    printf("Get request invoked on %s\n", stateNames[currState].c_str());
+    resp->Clear();
     if(currState!= LEADER){
       resp->set_value("");
+      printf("Setting leaderID to %d\n", leaderID);
       resp->set_leaderid(leaderID);
-      return Status(StatusCode::PERMISSION_DENIED, "Server not allowed top perform leader operations");
+      resp->set_db_errno(EPERM);
+
+      printf("LEADER ID Set in response: %d\n",resp->leaderid());
+      return Status::OK;
     }
     printf("Get invoked on server\n");
     string value;
@@ -224,6 +231,7 @@ public:
     leveldb::Status status = replicateddb->Get(leveldb::ReadOptions(), key, &value);
     printf("Value: %s\n", value.c_str());
     resp->set_value(value);
+    resp->set_leaderid(leaderID);
     return Status::OK;
   }
 };
