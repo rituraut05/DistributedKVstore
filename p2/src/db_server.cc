@@ -229,7 +229,7 @@ void runElectionTimer() {
   electionTimer.start(timeout);
   while(electionTimer.running() && 
     electionTimer.get_tick() < electionTimer._timeout) ; // spin
-  printf("[runElectionTimer] Spun for %d ms before timing out in state %d for term %d\n", electionTimer.get_tick(), currState, currentTerm);
+  // printf("[runElectionTimer] Spun for %d ms before timing out in state %d for term %d\n", electionTimer.get_tick(), currState, currentTerm);
   runElection();
   setCurrState(CANDIDATE);
 }
@@ -238,7 +238,7 @@ void runHeartbeatTimer() {
   heartbeatTimer.start(HEARTBEAT_TIMEOUT);
   while(heartbeatTimer.running() &&
     heartbeatTimer.get_tick() < heartbeatTimer._timeout) ; // spin
-  printf("[runHeartbeatTimer] Spun for %d ms before timing out to send heartbeat in term %d\n", heartbeatTimer.get_tick(), currentTerm);
+  // printf("[runHeartbeatTimer] Spun for %d ms before timing out to send heartbeat in term %d\n", heartbeatTimer.get_tick(), currentTerm);
   // sendHearbeat();
   runHeartbeatTimer();
 }
@@ -248,15 +248,19 @@ void invokeAppendEntries(int followerid) {
     if(followerid == serverID) matchIndex[followerid] = lastLogIndex;
     if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
       int lastidx = lastLogIndex;
+      printf("[invokeAppendEntries] Invoking AppendEntries for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
       int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
       if(ret == 0) { // success
+        printf("[invokeAppendEntries] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
         nextIndex[followerid] = lastidx + 1;
         matchIndex[followerid] = lastidx;
       }
       if(ret == -2) { // log inconsistency
+        printf("[invokeAppendEntries] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
         nextIndex[followerid]--;
       }
       if(ret == -3) { // term of follower bigger, convert to follower
+        printf("[invokeAppendEntries] AppendEntries failure; Follower (%d) has bigger term (new term = %d), converting to follower.\n", followerid, currentTerm);
         pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
         setCurrState(FOLLOWER);
         break;
@@ -278,10 +282,12 @@ void runRaftServer() {
         }
       }
       if(heartbeatTimer.running()) {
+        printf("[runRaftServer] In FOLLOWER, stopping heartbeat timer.\n");
         heartbeatTimer.set_running(false);
         heartbeatTimerThread.join();
       }
       if(!electionTimer.running()) {
+        printf("[runRaftServer] In FOLLOWER, starting election timer.\n");
         electionTimerThread.join();
         electionTimer.set_running(true);
         electionTimerThread = thread { runElectionTimer };
@@ -295,10 +301,12 @@ void runRaftServer() {
         }
       }
       if(heartbeatTimer.running()) {
+        printf("[runRaftServer] In CANDIDATE, stopping heartbeat timer.\n");
         heartbeatTimer.set_running(false);
         heartbeatTimerThread.join();
       }
       if(!electionRunning) {
+        printf("[runRaftServer] In CANDIDATE, starting election timer.\n");
         electionTimerThread.join();
         electionTimer.set_running(true);
         electionTimerThread = thread { runElectionTimer };
@@ -306,10 +314,12 @@ void runRaftServer() {
     }
     if(currState == LEADER) {
       if(electionTimer.running()) {
+        printf("[runRaftServer] In LEADER, stopping election timer.\n");
         electionTimer.set_running(false);
         electionTimerThread.join();
       }
       if(!heartbeatTimer.running()) {
+        printf("[runRaftServer] In LEADER, starting heartbeat timer.\n");
         heartbeatTimer.set_running(true);
         heartbeatTimerThread = thread { runHeartbeatTimer };
       }
@@ -590,7 +600,6 @@ public:
 };
 
 // Run main()
-
 std::unique_ptr<Server> server;
 void RunGrpcServer(string server_address) {
   dbImpl service;
@@ -600,15 +609,7 @@ void RunGrpcServer(string server_address) {
 
   server = builder.BuildAndStart();
   std::cout << "Server listening on " << server_address << std::endl;
-  std::unique_ptr<std::thread> worker(new std::thread([&]
-  {
-    server->Wait();
-  }));
-
-  if (worker->joinable())
-  {
-      worker->join();
-  }
+  server->Wait();
 }
 
 int main(int argc, char **argv) {
@@ -619,8 +620,9 @@ int main(int argc, char **argv) {
 
   // initialize values 
   serverID = atoi(argv[1]);
-  setCurrState(FOLLOWER);
-  // setCurrState(LEADER);
+  if(serverID == 0) setCurrState(LEADER);
+  else setCurrState(FOLLOWER);
+  // setCurrState(FOLLOWER);
 
   electionTimer.set_running(false);
   heartbeatTimer.set_running(false); 
@@ -646,11 +648,11 @@ int main(int argc, char **argv) {
   }
 
   // Run threads
-  RunGrpcServer(argv[2]);
   thread logExecutor(executeLog);
   thread raftServer(runRaftServer);
+  RunGrpcServer(argv[2]);
 
-  logExecutor.join();
-  raftServer.join();
+  if(logExecutor.joinable()) logExecutor.join();
+  if(raftServer.joinable()) raftServer.join();
   return 0;
 }
