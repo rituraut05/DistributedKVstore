@@ -5,10 +5,10 @@ package db;
 service RaftServer 
 {
     rpc Ping (PingMessage) returns (PingMessage) {}
-
     rpc PingFollower (PingMessage) returns (PingMessage) {}
 
     rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse) {}
+    rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
 
     rpc Get (GetRequest) returns (GetResponse) {}
 }
@@ -44,4 +44,12 @@ message AppendEntriesRequest {
 message AppendEntriesResponse {
     uint32 currTerm = 1;
     bool success = 2;
+}
+message RequestVoteRequest {
+    uint32 term = 1;
+    uint32 candidateId = 2;
+}
+
+message RequestVoteResponse {
+    
 }
