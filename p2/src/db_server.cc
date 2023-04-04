@@ -158,6 +158,7 @@ int commitIndex = 0; // valid index starts from 1
 int lastLogIndex = 0; // valid index starts from 1
 int nextIndex[SERVER_CNT];
 int matchIndex[SERVER_CNT];
+int heartbeatSender[SERVER_CNT];
 Timer electionTimer(1, MAX_ELECTION_TIMEOUT);
 Timer heartbeatTimer(1, HEARTBEAT_TIMEOUT);
 bool electionRunning = false;
@@ -289,38 +290,53 @@ void runElectionTimer() {
   setCurrState(CANDIDATE);
 }
 
+void sendHearbeat(){
+  for(int i = 0; i<SERVER_CNT; i++) if(i != serverID) heartbeatSender[i] = 1;
+}
+
 void runHeartbeatTimer() {
   heartbeatTimer.start(HEARTBEAT_TIMEOUT);
   while(heartbeatTimer.running() &&
     heartbeatTimer.get_tick() < heartbeatTimer._timeout) ; // spin
   // printf("[runHeartbeatTimer] Spun for %d ms before timing out to send heartbeat in term %d\n", heartbeatTimer.get_tick(), currentTerm);
-  // sendHearbeat();
+  sendHearbeat();
   runHeartbeatTimer();
+}
+
+int sendAppendEntriesRpc(int followerid, int lastidx){
+  int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
+  if(ret == 0) { // success
+    printf("[invokeAppendEntries] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
+    nextIndex[followerid] = lastidx + 1;
+    matchIndex[followerid] = lastidx;
+  }
+  if(ret == -2) { // log inconsistency
+    printf("[invokeAppendEntries] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
+    nextIndex[followerid]--;
+  }
+  if(ret == -3) { // term of follower bigger, convert to follower
+    printf("[invokeAppendEntries] AppendEntries failure; Follower (%d) has bigger term (new term = %d), converting to follower.\n", followerid, currentTerm);
+    pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
+    setCurrState(FOLLOWER);
+    return -1;
+  }
+  return 0;
 }
 
 void invokeAppendEntries(int followerid) {
   while(true) {
+    int status = 0;
     if(followerid == serverID) matchIndex[followerid] = lastLogIndex;
+    if(followerid != serverID && heartbeatSender[followerid] == 1){
+      status = sendAppendEntriesRpc(followerid, 0);
+      heartbeatSender[followerid] = 0;
+    }
     if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
       int lastidx = lastLogIndex;
       // printf("[invokeAppendEntries] Invoking AppendEntries for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
-      int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
-      if(ret == 0) { // success
-        printf("[invokeAppendEntries] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
-        nextIndex[followerid] = lastidx + 1;
-        matchIndex[followerid] = lastidx;
-      }
-      if(ret == -2) { // log inconsistency
-        printf("[invokeAppendEntries] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
-        nextIndex[followerid]--;
-      }
-      if(ret == -3) { // term of follower bigger, convert to follower
-        printf("[invokeAppendEntries] AppendEntries failure; Follower (%d) has bigger term (new term = %d), converting to follower.\n", followerid, currentTerm);
-        pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
-        setCurrState(FOLLOWER);
-        break;
-      }
+      status = sendAppendEntriesRpc(followerid, lastidx);
     }
+    if(status == -1) break;
   }
 }
 
@@ -382,8 +398,13 @@ void runRaftServer() {
       for(int i = 0; i<SERVER_CNT; i++) {
         if(!appendEntriesRunning[i]) {
           nextIndex[i] = lastLogIndex + 1;
-          if(i == serverID) matchIndex[i] = lastLogIndex;
-          else matchIndex[i] = 0;
+          if(i == serverID) {
+            matchIndex[i] = lastLogIndex;
+            heartbeatSender[i] = -1;
+          } else {
+            matchIndex[i] = 0;
+            heartbeatSender[i] = 0;
+          }
           appendEntriesRunning[i] = true;
           appendEntriesThreads[i] = thread { invokeAppendEntries, i };
         }
@@ -407,19 +428,21 @@ void runRaftServer() {
 void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterator logIndex, int leaderCommitIndex){
   Log logEntry;
   logs.erase(logIndex, logs.end());
+  // delete from DB
   for(auto itr = logEntries.begin(); itr != logEntries.end(); itr++){
     logEntry.index = itr->index(); //change
     logEntry.term = itr->term();
     logEntry.key = itr->key();
     logEntry.value = itr->value();
     logs.emplace(logIndex++, logEntry); 
+    lastLogIndex = itr->index();
     // persist in DB
     leveldb::Status logstatus = plogs->Put(leveldb::WriteOptions(), to_string(logEntry.index), logEntry.toString());
     // assert(status.ok()); should we add a try:catch here?
   }
   // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
   if(leaderCommitIndex > commitIndex)
-    commitIndex = std::min(leaderCommitIndex, logs.empty() ? INT_MAX : logs.back().index);
+    commitIndex = std::min(leaderCommitIndex, lastLogIndex);
 }
 
 void openOrCreateDBs() {
@@ -519,39 +542,46 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
   Status status;
   ClientContext context;
 
-  int prevLogIndex = logIndex-1;
-  // from this index + 1
-  auto prevLogIndexIt = logs.begin();
-  // to this index
-  auto lastLogIndexIt = logs.end();
-  for(auto iter = logs.begin(); iter != logs.end(); iter++){
-    if(iter->index == prevLogIndex) {
-      prevLogIndexIt = iter;
-      break;
+  if(lastIndex == 0){
+    request.Clear();
+    request.set_term(currentTerm);
+    request.set_leaderid(leaderID);
+    request.set_leadercommitindex(commitIndex);
+  } else {
+    int prevLogIndex = logIndex-1;
+    // from this index + 1
+    auto prevLogIndexIt = logs.begin();
+    // to this index
+    auto lastLogIndexIt = logs.end();
+    for(auto iter = logs.begin(); iter != logs.end(); iter++){
+      if(iter->index == prevLogIndex) {
+        prevLogIndexIt = iter;
+        break;
+      }
     }
-  }
 
-  for(auto iter = logs.end(); iter != prevLogIndexIt; iter--){
-    if(iter->index == lastIndex){
-      lastLogIndexIt = ++iter;
-      break;
+    for(auto iter = logs.end(); iter != prevLogIndexIt; iter--){
+      if(iter->index == lastIndex){
+        lastLogIndexIt = ++iter;
+        break;
+      }
     }
-  }
 
-  request.set_term(currentTerm);
-  request.set_leaderid(leaderID);
-  request.set_prevlogindex(prevLogIndex);
-  request.set_prevlogterm(prevLogIndexIt->term);
-  request.set_leadercommitindex(commitIndex);
+    request.set_term(currentTerm);
+    request.set_leaderid(leaderID);
+    request.set_prevlogindex(prevLogIndex);
+    request.set_prevlogterm(prevLogIndexIt->term);
+    request.set_leadercommitindex(commitIndex);
 
-  // creating log entries to store
+    // creating log entries to store
 
-  for (auto nextIdxIt = ++prevLogIndexIt; nextIdxIt != lastLogIndexIt; nextIdxIt++) {
-    db::LogEntry *reqEntry = request.add_entries();
-    reqEntry->set_index(nextIdxIt->index);
-    reqEntry->set_term(nextIdxIt->term);
-    reqEntry->set_key(nextIdxIt->key);
-    reqEntry->set_value(nextIdxIt->value);      
+    for (auto nextIdxIt = ++prevLogIndexIt; nextIdxIt != lastLogIndexIt; nextIdxIt++) {
+      db::LogEntry *reqEntry = request.add_entries();
+      reqEntry->set_index(nextIdxIt->index);
+      reqEntry->set_term(nextIdxIt->term);
+      reqEntry->set_key(nextIdxIt->key);
+      reqEntry->set_value(nextIdxIt->value);      
+    }
   }
 
   response.Clear();
@@ -608,34 +638,41 @@ public:
       currState = FOLLOWER; // candidates become followers
       electionRunning = false; 
       
-      int vectorIndex = -1;
-      auto logAtPrevIndex = --logs.begin();
-      for(auto iter = logs.begin(); iter != logs.end(); iter++){
-        if(iter->index == request->prevlogindex()){
-          logAtPrevIndex = iter;
-          vectorIndex = logAtPrevIndex - logs.begin();
-          break;
+      if(request->entries().size() == 0){
+        rpcSuccess = true;
+        // update commit index
+        int leaderCommitIndex = request->leadercommitindex();
+        if(leaderCommitIndex > commitIndex) commitIndex = std::min(leaderCommitIndex, lastLogIndex);
+      } else {
+        int vectorIndex = -1;
+        auto logAtPrevIndex = --logs.begin();
+        for(auto iter = logs.begin(); iter != logs.end(); iter++){
+          if(iter->index == request->prevlogindex()){
+            logAtPrevIndex = iter;
+            vectorIndex = logAtPrevIndex - logs.begin();
+            break;
+          }
         }
-      }
 
-      // check if req->prevLogIndex exists in LevelDB
-      bool existsInDB = false;
-      string prevLogFromDB = "";
-      if(vectorIndex == -1){
-        leveldb::Status logstatus = 
-                  plogs->Get(leveldb::ReadOptions(), to_string(request->prevlogindex()), &prevLogFromDB);
-        if(logstatus.ok())
-          existsInDB = true;
-      }
+        // check if req->prevLogIndex exists in LevelDB
+        bool existsInDB = false;
+        string prevLogFromDB = "";
+        if(vectorIndex == -1){
+          leveldb::Status logstatus = 
+                    plogs->Get(leveldb::ReadOptions(), to_string(request->prevlogindex()), &prevLogFromDB);
+          if(logstatus.ok())
+            existsInDB = true;
+        }
 
-      if((request->prevlogindex() == 0) || 
-        (vectorIndex > -1) && (logs[vectorIndex].term == request->prevlogterm()) ||
-        (existsInDB) && (Log(prevLogFromDB).term == request->prevlogterm()))  {
-          //append and change commit index
-          std::vector<db::LogEntry> logEntries(request->entries().begin(), request->entries().end());
-          updateLog(logEntries, ++logAtPrevIndex, request->leadercommitindex());
-          // updateLog should handle db update
-          rpcSuccess = true;
+        if((request->prevlogindex() == 0) || 
+          (vectorIndex > -1) && (logs[vectorIndex].term == request->prevlogterm()) ||
+          (existsInDB) && (Log(prevLogFromDB).term == request->prevlogterm()))  {
+            //append and change commit index
+            std::vector<db::LogEntry> logEntries(request->entries().begin(), request->entries().end());
+            updateLog(logEntries, ++logAtPrevIndex, request->leadercommitindex());
+            // updateLog should handle db update
+            rpcSuccess = true;
+        }
       }
     } 
     response->set_currterm(currentTerm);
