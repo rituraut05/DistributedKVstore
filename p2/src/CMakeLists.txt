@@ -45,6 +45,8 @@ target_link_libraries(hw_grpc_proto
 
 # set(UNRELIABLEFS_SRC db_client.cc wrapper.cc  conf.c unreliablefs.c unreliablefs_errinj.c unreliablefs_ops.c )
 
+add_executable(db_cleaner db_cleaner.cc)
+target_link_libraries(db_cleaner PUBLIC leveldb)
 
 add_executable(db_client db_client.cc)
 target_link_libraries(db_client 
