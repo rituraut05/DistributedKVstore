@@ -70,6 +70,8 @@ using db::RaftServer;
 using db::PingMessage;
 using db::GetRequest;
 using db::GetResponse;
+using db::PutRequest;
+using db::PutResponse;
 
 #define MIN_ELECTION_TIMEOUT   150
 #define MAX_ELECTION_TIMEOUT   300
@@ -81,6 +83,7 @@ using db::GetResponse;
 
 // ***************************** State enum **********************************
 enum State {FOLLOWER, CANDIDATE, LEADER};
+string stateNames[3] = {"FOLLOWER", "CANDIDATE", "LEADER"};
 
 // ***************************** Log class ***********************************
 
@@ -108,6 +111,12 @@ class Log {
     string value;
 
     Log() {}
+    Log(int index, int term, string key, string value){
+      this->index = index;
+      this->term = term;
+      this->key = key;
+      this->value = value;
+    }
 
     // log string is of the format- index;term;key;value
     Log(string logString) {
@@ -200,13 +209,58 @@ bool greaterThanMajority(int arr[], int N) {
   return true;
 }
 
+// hardcoded for testing executeLog: REMOVE LATER
+void testExecuteLog(){
+  printf("in testExecuteLog\n");
+  Log logEntryOne = Log(1, currentTerm, "key1", "value1");
+  Log logEntryTwo = Log(1, currentTerm, "key2", "value2");
+  Log logEntryThree = Log(1, currentTerm, "key3", "value3");
+  logs.push_back(logEntryOne);
+  logs.push_back(logEntryTwo);
+  logs.push_back(logEntryThree); 
+  commitIndex = 4;
+  lastApplied = 0;
+}
+
 void executeLog() {
+  testExecuteLog();
+  int i=0;
   while(true) {
+    i++;
     if(lastApplied < commitIndex) {
       lastApplied++;
-      printf("Executing Log: %d\n", lastApplied);
-      // Execute log at index lastApplied here 
-      // Decrement lastApplied back to original value if there was a failure
+      printf("[ExecuteLog]: Executing log from index: %d\n", lastApplied); 
+      
+      // find lastApplied index in logs
+      auto i = logs.begin();
+      for(; i!=logs.end(); i++){
+        if(i->index == lastApplied){
+          break;
+        }
+      }
+
+      // This can happen when we have erased till min(matchIndex) which have not yet applied
+      if(i== logs.end()){
+        printf("[ExecuteLog]: Unable to find %d index in logs\n", lastApplied);
+        continue;
+        // TODO: if such case arises. Find in DB as well.
+      }
+
+      while(i->index < commitIndex) {
+        // put to replicateddb
+        leveldb::Status status = replicateddb->Put(leveldb::WriteOptions(), i->key, i->value);
+        if(!status.ok()){
+          lastApplied--;
+          printf("[ExecuteLog]: Failure while put in replicated db %s\n", status.ToString().c_str());
+          pmetadata->Put(leveldb::WriteOptions(), "lastApplied", to_string(lastApplied));
+          break;
+        }
+        pmetadata->Put(leveldb::WriteOptions(), "lastApplied", to_string(lastApplied));
+        lastApplied++;
+        i++;
+      }
+    }else if(i%100==0){
+      printf("[ExecuteLog]: Logs are up to date.\n");
     }
   }
 }
@@ -604,6 +658,47 @@ public:
     resp->set_value(value);
     return Status::OK;
   }
+  
+  Status Put(ServerContext *context, const PutRequest *req, PutResponse *resp) override
+  {
+    printf("Put request invoked on %s\n", stateNames[currState].c_str());
+    if(currState!= LEADER){
+      printf("Setting leaderID to %d\n", leaderID);
+      resp->set_leaderid(leaderID);
+      resp->set_db_errno(EPERM);
+
+      printf("leaderID Set in response: %d\n",resp->leaderid());
+      return Status::OK;
+    }
+
+    string value = req->value();
+    string key = req->key();
+
+    Log logEntry;
+
+    std::shared_mutex mutex;
+    int lli = lastLogIndex;
+    
+    
+    mutex.lock();
+    logEntry.index = logs.back().index+1;
+    logEntry.term = currentTerm;
+    logEntry.key = key;
+    logEntry.value = value;
+
+    logs.push_back(logEntry);
+    lli = logEntry.index;
+    lastLogIndex = logEntry.index;
+    mutex.unlock();
+
+    while(commitIndex< lli){
+      printf("Waiting for commitIndex: %d == lastLogIndex: %d\n", commitIndex, lli);
+    }
+    printf("[Put] Success: (%s, %s) log committed\n", key.c_str(), value.c_str());
+
+    resp->set_leaderid(leaderID);
+    return Status::OK;
+  }
 };
 
 void RunGrpcServer(string server_address) {
@@ -614,6 +709,12 @@ void RunGrpcServer(string server_address) {
   std::unique_ptr<Server> server = builder.BuildAndStart();
   std::cout << "[RunGrpcServer] Server listening on " << server_address << std::endl;
   server->Wait();
+}
+
+void testPut(){
+  currentTerm++;
+  Log logEntryOne = Log(0, currentTerm, "name", "Ritu"); // need something at index = 0?
+  logs.push_back(logEntryOne); // hardcoded for testing put: REMOVE LATER
 }
 
 int main(int argc, char **argv) {
@@ -646,6 +747,9 @@ int main(int argc, char **argv) {
 
   //test get operation related operations - REMOVE LATER
   replicateddb->Put(leveldb::WriteOptions(), "name", "Ritu");
+
+  testPut();
+
   // initialize channels to servers
   for(int i = 0; i<SERVER_CNT; i++) {
     if(i != serverID) {
