@@ -161,6 +161,8 @@ bool electionRunning = false;
 bool appendEntriesRunning[SERVER_CNT];
 RaftClient* clients[SERVER_CNT];
 std::shared_mutex mutex_;
+std::shared_mutex mutex_ci;
+std::shared_mutex mutex_lli;
 
 /*
 * logs are stored as key - value pairs in plogs with
@@ -207,25 +209,15 @@ bool greaterThanMajority(int arr[], int N) {
   return true;
 }
 
-// hardcoded for testing executeLog: REMOVE LATER
-// void testExecuteLog(){
-//   printf("in testExecuteLog\n");
-//   Log logEntryOne = Log(1, currentTerm, "key1", "value1");
-//   Log logEntryTwo = Log(1, currentTerm, "key2", "value2");
-//   Log logEntryThree = Log(1, currentTerm, "key3", "value3");
-//   logs.push_back(logEntryOne);
-//   logs.push_back(logEntryTwo);
-//   logs.push_back(logEntryThree); 
-//   commitIndex = 4;
-//   lastApplied = 0;
-// }
-
 void executeLog() {
-  // testExecuteLog();
   int i=0;
+  int commitIndexLocal = 0;
   while(true) {
     i++;
-    if(lastApplied < commitIndex) {
+    mutex_ci.lock();
+    commitIndexLocal = commitIndex;
+    mutex_ci.unlock();
+    if(lastApplied < commitIndexLocal) {
       lastApplied++;
       printf("[ExecuteLog]: Executing log from index: %d\n", lastApplied); 
       
@@ -244,7 +236,7 @@ void executeLog() {
         // TODO: if such case arises. Find in DB as well.
       }
 
-      while(i->index < commitIndex) {
+      while(i->index < commitIndexLocal) {
         // put to replicateddb
         leveldb::Status status = replicateddb->Put(leveldb::WriteOptions(), i->key, i->value);
         if(!status.ok()){
@@ -333,10 +325,12 @@ void invokeAppendEntries(int followerid) {
       heartbeatSender[followerid] = 0;
     }
     mutex_.unlock();
+    mutex_lli.lock();
     if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
       int lastidx = lastLogIndex;
       status = sendAppendEntriesRpc(followerid, lastidx);
     }
+    mutex_lli.unlock();
     if(status == -1) break;
   }
 }
@@ -398,6 +392,7 @@ void runRaftServer() {
       // init values and invoke append entries
       for(int i = 0; i<SERVER_CNT; i++) {
         if(!appendEntriesRunning[i]) {
+          mutex_lli.lock();
           nextIndex[i] = lastLogIndex + 1;
           if(i == serverID) {
             matchIndex[i] = lastLogIndex;
@@ -406,11 +401,14 @@ void runRaftServer() {
             matchIndex[i] = 0;
             heartbeatSender[i] = 0;
           }
+          mutex_lli.unlock();
           appendEntriesRunning[i] = true;
           appendEntriesThreads[i] = thread { invokeAppendEntries, i };
         }
       }
       // check and update commit index 
+      mutex_ci.lock();
+      mutex_lli.lock();
       for(int N = lastLogIndex; N>commitIndex; N--) {
         auto NLogIndexIt = logs.end();
         for(; NLogIndexIt != logs.begin(); NLogIndexIt--) {
@@ -422,6 +420,8 @@ void runRaftServer() {
           break;
         }
       }
+      mutex_lli.unlock();
+      mutex_ci.unlock();
     }
   }
 }
@@ -445,15 +445,21 @@ void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterato
     logEntry.key = itr->key();
     logEntry.value = itr->value();
     logs.emplace(logIndex++, logEntry); 
+    mutex_lli.lock();
     lastLogIndex = itr->index();
+    mutex_lli.unlock();
     // persist in DB
     leveldb::Status logstatus = plogs->Put(leveldb::WriteOptions(), to_string(logEntry.index), logEntry.toString());
     // assert(status.ok()); should we add a try:catch here?
   }
   printRaftLog();
   // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+  mutex_ci.lock();
+  mutex_lli.lock();
   if(leaderCommitIndex > commitIndex)
     commitIndex = std::min(leaderCommitIndex, lastLogIndex);
+  mutex_lli.unlock();
+  mutex_ci.unlock();
 }
 
 void openOrCreateDBs() {
@@ -517,8 +523,10 @@ void initializePersistedValues() {
       break;
     }
   }
+  mutex_lli.lock();
   lastLogIndex = logidx - 1;
-  printf("[initializePersistedValues] Loaded logs till index = %d\n", lastLogIndex);
+  mutex_lli.unlock();
+  printf("[initializePersistedValues] Loaded logs till index = %d\n", logidx-1);
   printRaftLog();
 }
 
@@ -643,7 +651,6 @@ public:
 
   Status AppendEntries(ServerContext *context, const AppendEntriesRequest *request, AppendEntriesResponse *response) override
   {
-    printf("[AppendEntries RPC] received \n");
     //Process Append Entries RPC
     bool rpcSuccess = false;
     if(request->term() >= currentTerm){
@@ -656,7 +663,15 @@ public:
         rpcSuccess = true;
         // update commit index
         int leaderCommitIndex = request->leadercommitindex();
-        if(leaderCommitIndex > commitIndex) commitIndex = std::min(leaderCommitIndex, lastLogIndex);
+        mutex_ci.lock();
+        mutex_lli.lock();
+        if(leaderCommitIndex > commitIndex) {
+          printf("[AppendEntries RPC] Heartbeat requires updating commitIndex\n");
+          commitIndex = std::min(leaderCommitIndex, lastLogIndex);
+          printRaftLog();
+        }
+        mutex_lli.unlock();
+        mutex_ci.unlock();
       } else {
         printf("[AppendEntries RPC] Received for, term = %d, prevLogIndex=%d, prevLogTerm=%d, No of entries=%d\n",
           request->term(), request->prevlogindex(), request->prevlogterm(), request->entries().size());
@@ -729,27 +744,32 @@ public:
 
     Log logEntry;
 
-    std::shared_mutex mutex;
+    // std::shared_mutex mutex; // Move to a global lock. Otherwise it is useless.
+    mutex_lli.lock();
     int lli = lastLogIndex;
+    mutex_lli.unlock();
     
-    
-    mutex.lock();
-    logEntry.index = lastLogIndex+1;
+    // mutex.lock();
+    logEntry.index = lli+1;
     logEntry.term = currentTerm;
     logEntry.key = key;
     logEntry.value = value;
-
     logs.push_back(logEntry);
     lli = logEntry.index;
+
+    mutex_lli.lock();
     lastLogIndex = logEntry.index;
-    mutex.unlock();
+    mutex_lli.unlock();
+    // mutex.unlock();
 
     leveldb::Status logstatus = plogs->Put(leveldb::WriteOptions(), to_string(logEntry.index), logEntry.toString());
 
     printRaftLog();
 
-    while(commitIndex< lli){
-      // printf("Waiting for commitIndex: %d == lastLogIndex: %d\n", commitIndex, lli);
+    while(true) {
+      mutex_ci.lock();
+      if(commitIndex >= lli) break;
+      mutex_ci.unlock();
     }
     printf("[Put] Success: (%s, %s) log committed\n", key.c_str(), value.c_str());
 
