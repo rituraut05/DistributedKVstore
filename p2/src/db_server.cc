@@ -73,13 +73,9 @@ using db::GetResponse;
 using db::PutRequest;
 using db::PutResponse;
 
-#define MIN_ELECTION_TIMEOUT   150
-#define MAX_ELECTION_TIMEOUT   300
-#define HEARTBEAT_TIMEOUT      70
-
-// Move to file with server configs and read from there upon start
-
-
+#define MIN_ELECTION_TIMEOUT   4000
+#define MAX_ELECTION_TIMEOUT   5000
+#define HEARTBEAT_TIMEOUT      1000
 
 // ***************************** State enum **********************************
 enum State {FOLLOWER, CANDIDATE, LEADER};
