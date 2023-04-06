@@ -658,6 +658,8 @@ public:
         int leaderCommitIndex = request->leadercommitindex();
         if(leaderCommitIndex > commitIndex) commitIndex = std::min(leaderCommitIndex, lastLogIndex);
       } else {
+        printf("[AppendEntries RPC] Received for, term = %d, prevLogIndex=%d, prevLogTerm=%d, No of entries=%d\n",
+          request->term(), request->prevlogindex(), request->prevlogterm(), request->entries().size());
         int vectorIndex = -1;
         auto logAtPrevIndex = --logs.begin();
         for(auto iter = logs.begin(); iter != logs.end(); iter++){
@@ -667,7 +669,7 @@ public:
             break;
           }
         }
-
+        printf("[AppendEntries RPC] vectorIndex = %d\n", vectorIndex);
         // check if req->prevLogIndex exists in LevelDB
         bool existsInDB = false;
         string prevLogFromDB = "";
@@ -741,6 +743,8 @@ public:
     lli = logEntry.index;
     lastLogIndex = logEntry.index;
     mutex.unlock();
+
+    leveldb::Status logstatus = plogs->Put(leveldb::WriteOptions(), to_string(logEntry.index), logEntry.toString());
 
     printRaftLog();
 
