@@ -305,8 +305,10 @@ int sendAppendEntriesRpc(int followerid, int lastidx){
   int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
   if(ret == 0) { // success
     printf("[sendAppendEntriesRpc] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
-    nextIndex[followerid] = lastidx + 1;
-    matchIndex[followerid] = lastidx;
+    if(lastidx != 0) {
+      nextIndex[followerid] = lastidx + 1;
+      matchIndex[followerid] = lastidx;
+    }
   }
   if(ret == -2) { // log inconsistency
     printf("[sendAppendEntriesRpc] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
