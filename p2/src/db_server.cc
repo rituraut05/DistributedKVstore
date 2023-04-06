@@ -304,8 +304,8 @@ void runHeartbeatTimer() {
 int sendAppendEntriesRpc(int followerid, int lastidx){
   int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
   if(ret == 0) { // success
-    printf("[sendAppendEntriesRpc] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
     if(lastidx != 0) {
+      printf("[sendAppendEntriesRpc] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
       nextIndex[followerid] = lastidx + 1;
       matchIndex[followerid] = lastidx;
     }
@@ -562,7 +562,7 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
   } else {
     int prevLogIndex = logIndex-1;
     // from this index + 1
-    auto prevLogIndexIt = logs.begin();
+    auto prevLogIndexIt = prevLogIndex == 0 ? --logs.begin() : logs.begin();
     // to this index
     auto lastLogIndexIt = logs.end();
     for(auto iter = logs.begin(); iter != logs.end(); iter++){
@@ -600,7 +600,8 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
   status = stub_->AppendEntries(&context, request, &response);
 
   if (status.ok()) {
-    printf("[RaftClient::AppendEntries] RPC Success\n");
+    if(lastIndex != 0)
+      printf("[RaftClient::AppendEntries] RPC Success\n");
     if(response.success() == false){
       if(response.currterm() > currentTerm){
         printf("[RaftClient::AppendEntries] Higher Term in Response\n");
@@ -612,7 +613,8 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
       }
     }
   } else {
-    printf("[RaftClient::AppendEntries] RPC Failure\n");
+    if(lastIndex != 0)
+      printf("[RaftClient::AppendEntries] RPC Failure\n");
     return -1;
   }
   return 0;
@@ -730,7 +732,7 @@ public:
     
     
     mutex.lock();
-    logEntry.index = logs.back().index+1;
+    logEntry.index = lastLogIndex+1;
     logEntry.term = currentTerm;
     logEntry.key = key;
     logEntry.value = value;
@@ -740,8 +742,10 @@ public:
     lastLogIndex = logEntry.index;
     mutex.unlock();
 
+    printRaftLog();
+
     while(commitIndex< lli){
-      printf("Waiting for commitIndex: %d == lastLogIndex: %d\n", commitIndex, lli);
+      // printf("Waiting for commitIndex: %d == lastLogIndex: %d\n", commitIndex, lli);
     }
     printf("[Put] Success: (%s, %s) log committed\n", key.c_str(), value.c_str());
 

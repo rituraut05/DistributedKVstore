@@ -16,25 +16,37 @@ int main(int argc, char **argv)
     leveldb::Status plogs_status = leveldb::DB::Open(options, "/tmp/plogs" + to_string(serverId), &plogs);
     if(!pmetadata_status.ok()) std::cerr << pmetadata_status.ToString() << endl;
     assert(pmetadata_status.ok());
-
-    string key = "1";
-    string term = "currentTerm";
-    string value = "";
-    // read
-    status = plogs->Get(leveldb::ReadOptions(), key, &value);
-    assert(status.ok());
-    cout << value << endl;
+    if(!plogs_status.ok()) std::cerr << plogs_status.ToString() << endl;
+    assert(plogs_status.ok());
+    
     // delete
-    status = pmetadata->Delete(leveldb::WriteOptions(), term);
+    status = pmetadata->Delete(leveldb::WriteOptions(), "currentTerm");
     assert(status.ok());
-    // // delete
-    // status = plogs->Delete(leveldb::WriteOptions(), key);
-    // assert(status.ok());
-    key = "2";
+
+    status = pmetadata->Delete(leveldb::WriteOptions(), "lastApplied");
+    assert(status.ok());
+
+    status = pmetadata->Delete(leveldb::WriteOptions(), "votedFor");
+    assert(status.ok());
+
+    int i = 1;
+    while(true) {
+        string logstr = "";
+        leveldb::Status s = plogs->Get(leveldb::ReadOptions(), to_string(i), &logstr);
+        if(s.ok()) {
+            printf("Erasing log index %d\n", i);
+            s = plogs->Delete(leveldb::WriteOptions(), to_string(i));
+            i++;
+        } else {
+            break;
+        }
+    }
+
     // read
-    status = plogs->Get(leveldb::ReadOptions(), key, &value);
+    string value = "";
+    status = plogs->Get(leveldb::ReadOptions(), "1", &value);
     assert(status.ok());
-    cout << value << endl;
+    cout << "1 = " << value << endl;
 
     //close
     delete pmetadata;
