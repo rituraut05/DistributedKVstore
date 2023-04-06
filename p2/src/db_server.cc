@@ -257,8 +257,6 @@ void executeLog() {
         lastApplied++;
         i++;
       }
-    }else if(i%100==0){
-      // printf("[ExecuteLog]: Logs are up to date.\n");
     }
   }
 }
@@ -282,7 +280,7 @@ void runElectionTimer() {
   electionTimer.start(timeout);
   while(electionTimer.running() && 
     electionTimer.get_tick() < electionTimer._timeout) ; // spin
-  // printf("[runElectionTimer] Spun for %d ms before timing out in state %d for term %d\n", electionTimer.get_tick(), currState, currentTerm);
+  printf("[runElectionTimer] Spun for %d ms before timing out in state %d for term %d\n", electionTimer.get_tick(), currState, currentTerm);
   runElection();
   setCurrState(CANDIDATE);
 }
@@ -299,7 +297,6 @@ void runHeartbeatTimer() {
   heartbeatTimer.start(HEARTBEAT_TIMEOUT);
   while(heartbeatTimer.running() &&
     heartbeatTimer.get_tick() < heartbeatTimer._timeout) ; // spin
-  // printf("[runHeartbeatTimer] Spun for %d ms before timing out to send heartbeat in term %d\n", heartbeatTimer.get_tick(), currentTerm);
   sendHearbeat();
   runHeartbeatTimer();
 }
@@ -307,16 +304,16 @@ void runHeartbeatTimer() {
 int sendAppendEntriesRpc(int followerid, int lastidx){
   int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
   if(ret == 0) { // success
-    printf("[invokeAppendEntries] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
+    printf("[sendAppendEntriesRpc] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
     nextIndex[followerid] = lastidx + 1;
     matchIndex[followerid] = lastidx;
   }
   if(ret == -2) { // log inconsistency
-    printf("[invokeAppendEntries] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
+    printf("[sendAppendEntriesRpc] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
     nextIndex[followerid]--;
   }
   if(ret == -3) { // term of follower bigger, convert to follower
-    printf("[invokeAppendEntries] AppendEntries failure; Follower (%d) has bigger term (new term = %d), converting to follower.\n", followerid, currentTerm);
+    printf("[sendAppendEntriesRpc] AppendEntries failure; Follower (%d) has bigger term (new term = %d), converting to follower.\n", followerid, currentTerm);
     pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
     setCurrState(FOLLOWER);
     return -1;
@@ -336,7 +333,6 @@ void invokeAppendEntries(int followerid) {
     mutex_.unlock();
     if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
       int lastidx = lastLogIndex;
-      // printf("[invokeAppendEntries] Invoking AppendEntries for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
       status = sendAppendEntriesRpc(followerid, lastidx);
     }
     if(status == -1) break;
@@ -428,6 +424,15 @@ void runRaftServer() {
   }
 }
 
+void printRaftLog() {
+  printf("======================== Raft Log ===========================\n");
+  for(auto logIt = logs.begin(); logIt != logs.end(); logIt++) {
+    printf("%d  %d  %s:%s\n", logIt->index, logIt->term, (logIt->key).c_str(), (logIt->value).c_str());
+  }
+  printf("\nCommit Index: %d\n\n", commitIndex);
+  printf("=============================================================\n");
+}
+
 void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterator logIndex, int leaderCommitIndex){
   Log logEntry;
   logs.erase(logIndex, logs.end());
@@ -443,6 +448,7 @@ void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterato
     leveldb::Status logstatus = plogs->Put(leveldb::WriteOptions(), to_string(logEntry.index), logEntry.toString());
     // assert(status.ok()); should we add a try:catch here?
   }
+  printRaftLog();
   // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
   if(leaderCommitIndex > commitIndex)
     commitIndex = std::min(leaderCommitIndex, lastLogIndex);
@@ -511,6 +517,7 @@ void initializePersistedValues() {
   }
   lastLogIndex = logidx - 1;
   printf("[initializePersistedValues] Loaded logs till index = %d\n", lastLogIndex);
+  printRaftLog();
 }
 
 // ***************************** RaftClient Code *****************************
@@ -735,6 +742,8 @@ public:
       printf("Waiting for commitIndex: %d == lastLogIndex: %d\n", commitIndex, lli);
     }
     printf("[Put] Success: (%s, %s) log committed\n", key.c_str(), value.c_str());
+
+    printRaftLog();
 
     resp->set_leaderid(leaderID);
     return Status::OK;
