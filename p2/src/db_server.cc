@@ -208,20 +208,20 @@ bool greaterThanMajority(int arr[], int N) {
 }
 
 // hardcoded for testing executeLog: REMOVE LATER
-void testExecuteLog(){
-  printf("in testExecuteLog\n");
-  Log logEntryOne = Log(1, currentTerm, "key1", "value1");
-  Log logEntryTwo = Log(1, currentTerm, "key2", "value2");
-  Log logEntryThree = Log(1, currentTerm, "key3", "value3");
-  logs.push_back(logEntryOne);
-  logs.push_back(logEntryTwo);
-  logs.push_back(logEntryThree); 
-  commitIndex = 4;
-  lastApplied = 0;
-}
+// void testExecuteLog(){
+//   printf("in testExecuteLog\n");
+//   Log logEntryOne = Log(1, currentTerm, "key1", "value1");
+//   Log logEntryTwo = Log(1, currentTerm, "key2", "value2");
+//   Log logEntryThree = Log(1, currentTerm, "key3", "value3");
+//   logs.push_back(logEntryOne);
+//   logs.push_back(logEntryTwo);
+//   logs.push_back(logEntryThree); 
+//   commitIndex = 4;
+//   lastApplied = 0;
+// }
 
 void executeLog() {
-  testExecuteLog();
+  // testExecuteLog();
   int i=0;
   while(true) {
     i++;
@@ -762,11 +762,11 @@ void RunGrpcServer(string server_address) {
   server->Wait();
 }
 
-void testPut(){
-  currentTerm++;
-  Log logEntryOne = Log(0, currentTerm, "name", "Ritu"); // need something at index = 0?
-  logs.push_back(logEntryOne); // hardcoded for testing put: REMOVE LATER
-}
+// void testPut(){
+//   currentTerm++;
+//   Log logEntryOne = Log(0, currentTerm, "name", "Ritu"); // need something at index = 0?
+//   logs.push_back(logEntryOne); // hardcoded for testing put: REMOVE LATER
+// }
 
 int main(int argc, char **argv) {
   if(argc != 3) {
@@ -799,7 +799,7 @@ int main(int argc, char **argv) {
   //test get operation related operations - REMOVE LATER
   replicateddb->Put(leveldb::WriteOptions(), "name", "Ritu");
 
-  testPut();
+  // testPut();
 
   // initialize channels to servers
   for(int i = 0; i<SERVER_CNT; i++) {
