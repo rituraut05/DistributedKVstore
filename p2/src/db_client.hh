@@ -4,13 +4,17 @@
 
 using namespace std;
 using grpc::Channel;
+using grpc::Status;
+using grpc::StatusCode;
+
 using db::RaftServer;
 using db::GetRequest;
 using db::GetResponse;
 using db::PutRequest;
 using db::PutResponse;
-using grpc::Status;
-using grpc::StatusCode;
+using db::RvRequest;
+using db::RvResponse;
+
 
 
 

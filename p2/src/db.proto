@@ -8,7 +8,7 @@ service RaftServer
     rpc PingFollower (PingMessage) returns (PingMessage) {}
 
     rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse) {}
-    rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse) {}
+    rpc RequestVote (RvRequest) returns (RvResponse) {}
 
     rpc Get (GetRequest) returns (GetResponse) {}
     rpc Put (PutRequest) returns (PutResponse) {}
@@ -57,11 +57,14 @@ message AppendEntriesResponse {
     bool success = 2;
 }
 
-message RequestVoteRequest {
+message RvRequest {
     uint32 term = 1;
     uint32 candidateId = 2;
+    uint32 lastLogTerm = 3;
+    uint32 lastLogIndex = 4;
 }
 
-message RequestVoteResponse {
-    
+message RvResponse {
+    uint32 term = 1;
+    bool voteGranted = 2;
 }
