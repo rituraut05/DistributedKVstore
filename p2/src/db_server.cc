@@ -164,6 +164,7 @@ Timer heartbeatTimer(1, HEARTBEAT_TIMEOUT);
 bool electionRunning = false;
 bool appendEntriesRunning[SERVER_CNT];
 RaftClient* clients[SERVER_CNT];
+std::shared_mutex mutex_;
 
 /*
 * logs are stored as key - value pairs in plogs with
@@ -261,7 +262,7 @@ void executeLog() {
         i++;
       }
     }else if(i%100==0){
-      printf("[ExecuteLog]: Logs are up to date.\n");
+      // printf("[ExecuteLog]: Logs are up to date.\n");
     }
   }
 }
@@ -291,7 +292,11 @@ void runElectionTimer() {
 }
 
 void sendHearbeat(){
-  for(int i = 0; i<SERVER_CNT; i++) if(i != serverID) heartbeatSender[i] = 1;
+  for(int i = 0; i<SERVER_CNT; i++) if(i != serverID) {
+    mutex_.lock();
+    heartbeatSender[i] = 1;
+    mutex_.unlock();
+  }
 }
 
 void runHeartbeatTimer() {
@@ -327,10 +332,12 @@ void invokeAppendEntries(int followerid) {
   while(true) {
     int status = 0;
     if(followerid == serverID) matchIndex[followerid] = lastLogIndex;
+    mutex_.lock();
     if(followerid != serverID && heartbeatSender[followerid] == 1){
       status = sendAppendEntriesRpc(followerid, 0);
       heartbeatSender[followerid] = 0;
     }
+    mutex_.unlock();
     if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
       int lastidx = lastLogIndex;
       // printf("[invokeAppendEntries] Invoking AppendEntries for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
