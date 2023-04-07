@@ -702,12 +702,13 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
 
     // creating log entries to store
 
-    for (auto nextIdxIt = ++prevLogIndexIt; nextIdxIt != lastLogIndexIt; nextIdxIt++) {
+    for (auto nextIdxIt = ++prevLogIndexIt; 
+      nextIdxIt != lastLogIndexIt; nextIdxIt++) {
       db::LogEntry *reqEntry = request.add_entries();
       reqEntry->set_index(nextIdxIt->index);
       reqEntry->set_term(nextIdxIt->term);
       reqEntry->set_key(nextIdxIt->key);
-      reqEntry->set_value(nextIdxIt->value);      
+      reqEntry->set_value(nextIdxIt->value);
     }
   }
 
