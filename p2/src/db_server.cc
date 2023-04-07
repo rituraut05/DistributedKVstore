@@ -75,8 +75,8 @@ using db::PutResponse;
 using db::RvRequest;
 using db::RvResponse;
 
-// #define MIN_ELECTION_TIMEOUT   10000*serverID
-// #define MAX_ELECTION_TIMEOUT   20000
+#define MIN_ELECTION_TIMEOUT   1000
+#define MAX_ELECTION_TIMEOUT   5000
 #define HEARTBEAT_TIMEOUT      1000
 
 // ***************************** State enum **********************************
@@ -151,10 +151,8 @@ class RaftClient {
 
 // ***************************** Volatile Variables **************************
 int serverID;
-int leaderID = -1;//put lock
+int leaderID = -1; // put lock
 int votesReceived = 0; // for a candidate
-int MIN_ELECTION_TIMEOUT = 1000;
-int MAX_ELECTION_TIMEOUT = 1100;
 
 State currState; //put lock
 int commitIndex = 0; // valid index starts from 1
@@ -436,17 +434,21 @@ void runRaftServer() {
   thread heartbeatTimerThread;
   thread appendEntriesThreads[SERVER_CNT];
   while(true) {
-    if(currState == FOLLOWER) {
+    mutex_cs.lock();
+    State currStateLocal = currState;
+    mutex_cs.unlock();
+
+    if(currStateLocal == FOLLOWER) {
       for(int i = 0; i<SERVER_CNT; i++) {
         if(appendEntriesRunning[i]) {
-          appendEntriesRunning[i] = false;
           appendEntriesThreads[i].join();
+          appendEntriesRunning[i] = false;
         }
       }
       if(heartbeatTimer.running()) {
         printf("[runRaftServer] In FOLLOWER, stopping heartbeat timer.\n");
-        heartbeatTimer.set_running(false);
         if(heartbeatTimerThread.joinable()) heartbeatTimerThread.join();
+        heartbeatTimer.set_running(false);
       }
       if(!electionTimer.running()) {
         printf("[runRaftServer] In FOLLOWER, starting election timer.\n");
@@ -455,11 +457,11 @@ void runRaftServer() {
         electionTimerThread = thread { runElectionTimer };
       }
     }
-    if(currState == CANDIDATE) {
+    if(currStateLocal == CANDIDATE) {
       for(int i = 0; i<SERVER_CNT; i++) {
         if(appendEntriesRunning[i]) {
-          appendEntriesRunning[i] = false;
           appendEntriesThreads[i].join();
+          appendEntriesRunning[i] = false;
         }
       }
       if(heartbeatTimer.running()) {
@@ -474,7 +476,7 @@ void runRaftServer() {
         electionTimerThread = thread { runElectionTimer };
       }
     }
-    if(currState == LEADER) {
+    if(currStateLocal == LEADER) {
       if(electionTimer.running()) {
         printf("[runRaftServer] In LEADER, stopping election timer.\n");
         if(electionTimerThread.joinable()) electionTimerThread.join();
@@ -581,8 +583,6 @@ void openOrCreateDBs() {
 }
 
 void initializePersistedValues() {
-  MIN_ELECTION_TIMEOUT = 1000*(serverID+1);
-  MAX_ELECTION_TIMEOUT = 1100*(serverID+1);
   string value;
   leveldb::Status currentTermStatus = pmetadata->Get(leveldb::ReadOptions(), "currentTerm", &value);
   if (!currentTermStatus.ok()) {
@@ -875,7 +875,6 @@ public:
 
   Status RequestVote(ServerContext *context, const RvRequest *req, RvResponse *resp) override
   {
-    // printf("entered request voke server fucntion\n");
     printf("[RequestVote] invoked on %s %d by candidate %d\n", stateNames[currState].c_str(), serverID, req->candidateid());
     int term = req->term();
     int candidateID = req->candidateid();
@@ -901,6 +900,7 @@ public:
       if(votedFor == candidateID) {
         resp->set_term(currentTerm);
         resp->set_votegranted(true);
+        electionTimer.reset(getRandomTimeout());
         printf("VOTED!: already votedFor %d\n", votedFor);
         return Status::OK;
       } else if(votedFor!= -1) {
@@ -920,11 +920,11 @@ public:
       voter_lli = logs.back().index;
       voter_llt = logs.back().term;
     }
-    
 
     if(llt > voter_llt || (llt == voter_llt && lli >= voter_lli)) { // candidate has longer log than voter or ..
       resp->set_term(currentTerm); 
       resp->set_votegranted(true);
+      electionTimer.reset(getRandomTimeout());
       printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n", llt, voter_llt, lli, voter_lli);
       printf("VOTED!: Candidate has longer log than me\n");
       mutex_ct.lock();
@@ -1076,8 +1076,6 @@ int main(int argc, char **argv) {
 
   //test get operation related operations - REMOVE LATER
   replicateddb->Put(leveldb::WriteOptions(), "name", "Ritu");
-
-  // testPut();
 
   // initialize channels to servers
   for(int i = 0; i<SERVER_CNT; i++) {
