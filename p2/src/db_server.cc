@@ -687,8 +687,20 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
 
   if(lastIndex == 0){
     request.Clear();
+    int prevLogIndex = logIndex-1;
+    // TODO: Uncomment if wiping in memory logs
+    // // from this index + 1
+    // auto prevLogIndexIt = prevLogIndex == 0 ? --logs.begin() : logs.begin();
+    // for(auto iter = logs.begin(); iter != logs.end(); iter++){
+    //   if(iter->index == prevLogIndex) {
+    //     prevLogIndexIt = iter;
+    //     break;
+    //   }
+    // }
     request.set_term(currentTerm);
     request.set_leaderid(leaderID);
+    request.set_prevlogindex(prevLogIndex);
+    request.set_prevlogterm(logs[prevLogIndex-1].term);
     request.set_leadercommitindex(commitIndex);
   } else {
     int prevLogIndex = logIndex-1;
@@ -718,8 +730,7 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
 
     // creating log entries to store
 
-    for (auto nextIdxIt = ++prevLogIndexIt; 
-      nextIdxIt != lastLogIndexIt; nextIdxIt++) {
+    for (auto nextIdxIt = ++prevLogIndexIt; nextIdxIt != lastLogIndexIt; nextIdxIt++) {
       db::LogEntry *reqEntry = request.add_entries();
       reqEntry->set_index(nextIdxIt->index);
       reqEntry->set_term(nextIdxIt->term);
@@ -840,7 +851,7 @@ public:
         setCurrState(FOLLOWER); 
       
       if(request->entries().size() == 0){
-        rpcSuccess = true;
+        // rpcSuccess = true;
         // update commit index
         int leaderCommitIndex = request->leadercommitindex();
         mutex_ci.lock();
@@ -852,6 +863,23 @@ public:
         }
         mutex_lli.unlock();
         mutex_ci.unlock();
+        if(request->prevlogindex() != 0){
+          // TODO: Uncomment if wiping in memory logs
+          // int vectorIndex = -1;
+          // auto logAtPrevIndex = --logs.begin();
+          // for(auto iter = logs.begin(); iter != logs.end(); iter++){
+          //   if(iter->index == request->prevlogindex()){
+          //     logAtPrevIndex = iter;
+          //     vectorIndex = logAtPrevIndex - logs.begin();
+          //     break;
+          //   }
+          // }
+          if((request->prevlogindex() <= logs.size()) && (logs[request->prevlogindex()-1].term == request->prevlogterm())){
+            rpcSuccess = true;
+          } 
+        } else {
+          rpcSuccess = true;
+        }
       } else {
         printf("[AppendEntries RPC] Received for, term = %d, prevLogIndex=%d, prevLogTerm=%d, No of entries=%d\n",
           request->term(), request->prevlogindex(), request->prevlogterm(), request->entries().size());
