@@ -173,6 +173,7 @@ std::shared_mutex mutex_votes; // for votesReceived
 std::shared_mutex mutex_leader; // for leaderID
 std::shared_mutex mutex_cs; // for currState
 std::shared_mutex mutex_er; // for electionRunning
+std::shared_mutex mutex_aer; // for appendEntriesRunning
 
 /*
 * logs are stored as key - value pairs in plogs with
@@ -206,13 +207,12 @@ void setCurrState(State cs)
   mutex_cs.lock();
   currState = cs;
   mutex_cs.unlock();
-  if(cs==LEADER){
+  if(cs == LEADER) {
     mutex_leader.lock();
     leaderID = serverID;
     mutex_leader.unlock();
   }
-  // printf("Server %d = %s for term = %d\n", serverID, stateNames[cs].c_str(), currentTerm);
-
+  printf("Server %d = %s for term = %d\n", serverID, stateNames[cs].c_str(), currentTerm);
 }
 
 int getRandomTimeout() {
@@ -323,7 +323,7 @@ void runElection() {
     if(id != serverID && RequestVoteThreads[id].joinable()){
       RequestVoteThreads[id].join();
     }
-      
+
   }
 
   // no other server can become leader in this time for this term, 
@@ -354,12 +354,14 @@ void runElectionTimer() {
   while(electionTimer.running() && 
     electionTimer.get_tick() < electionTimer._timeout) ; // spin
   printf("[runElectionTimer] Spun for %d ms before timing out in state %d for term %d\n", electionTimer.get_tick(), currState, currentTerm);
-
-  mutex_er.lock();
-  electionRunning = true;
-  mutex_er.unlock();
-  setCurrState(CANDIDATE);
-  runElection();
+  
+  if(electionTimer.running()) {    
+    mutex_er.lock();
+    electionRunning = true;
+    mutex_er.unlock();
+    setCurrState(CANDIDATE);
+    runElection();
+  }
 }
 
 void sendHearbeat(){
@@ -408,9 +410,9 @@ void invokeAppendEntries(int followerid) {
     if(followerid == serverID) matchIndex[followerid] = lastLogIndex;
     mutex_.lock();
     if(followerid != serverID && heartbeatSender[followerid] == 1){
-      // mutex_ct.lock();
-      // printf("[invokeAppendEntries] Sending Hearbeat for term = %d\n", currentTerm);
-      // mutex_ct.unlock();
+      mutex_ct.lock();
+      printf("[invokeAppendEntries] Sending Hearbeat to follower %d for term = %d\n", followerid, currentTerm);
+      mutex_ct.unlock();
       status = sendAppendEntriesRpc(followerid, 0);
       heartbeatSender[followerid] = 0;
     }
@@ -422,6 +424,11 @@ void invokeAppendEntries(int followerid) {
     }
     mutex_lli.unlock();
     if(status == -1) break;
+    mutex_aer.lock();
+    if(!appendEntriesRunning[followerid]) {
+      mutex_aer.unlock();
+      break;
+    } else mutex_aer.unlock();
   }
 }
 
@@ -438,10 +445,13 @@ void runRaftServer() {
     mutex_ct.unlock();
     if(currStateLocal == FOLLOWER) {
       for(int i = 0; i<SERVER_CNT; i++) {
+        mutex_aer.lock();
         if(appendEntriesRunning[i]) {
-          appendEntriesThreads[i].join();
           appendEntriesRunning[i] = false;
-        }
+          mutex_aer.unlock();
+          appendEntriesThreads[i].join();
+        } else
+          mutex_aer.unlock();
       }
       if(heartbeatTimer.running()) {
         printf("[runRaftServer] In FOLLOWER with term = %d, stopping heartbeat timer.\n", ctLocal);
@@ -450,16 +460,20 @@ void runRaftServer() {
       }
       if(!electionTimer.running()) {
         printf("[runRaftServer] In FOLLOWER with term = %d, starting election timer.\n", ctLocal);
+        if(electionTimerThread.joinable()) electionTimerThread.join();
         electionTimer.set_running(true);
         electionTimerThread = thread { runElectionTimer };
       }
     }
     if(currStateLocal == CANDIDATE) {
       for(int i = 0; i<SERVER_CNT; i++) {
+        mutex_aer.lock();
         if(appendEntriesRunning[i]) {
           appendEntriesRunning[i] = false;
+          mutex_aer.unlock();
           appendEntriesThreads[i].join();
-        }
+        } else 
+          mutex_aer.unlock();
       }
       if(heartbeatTimer.running()) {
         printf("[runRaftServer] In CANDIDATE with term = %d, stopping heartbeat timer.\n", ctLocal);
@@ -487,6 +501,7 @@ void runRaftServer() {
         heartbeatTimerThread = thread { runHeartbeatTimer };
       }
       // init values and invoke append entries
+      mutex_aer.lock();
       for(int i = 0; i<SERVER_CNT; i++) {
         if(!appendEntriesRunning[i]) {
           mutex_lli.lock();
@@ -504,6 +519,7 @@ void runRaftServer() {
           appendEntriesThreads[i] = thread { invokeAppendEntries, i };
         }
       }
+      mutex_aer.unlock();
       // check and update commit index 
       mutex_lli.lock();
       int lliLocal = lastLogIndex;
@@ -733,7 +749,7 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
       }
     }
   } else {
-    if(lastIndex != 0)
+    // if(lastIndex != 0)
       printf("[RaftClient::AppendEntries] RPC Failure\n");
     return -1;
   }
@@ -813,16 +829,15 @@ public:
       mutex_ct.lock();
       currentTerm = (int)request->term(); // updating current term
       pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
-      votedFor = -1;
-      pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(-1));
       mutex_ct.unlock();
 
       electionTimer.reset(getRandomTimeout()); //election timer reset
-      setCurrState(FOLLOWER); // candidates become followers
-  
-      mutex_er.lock();
-      electionRunning = false; 
-      mutex_er.unlock();
+      
+      mutex_cs.lock();
+      State csLocal = currState;
+      mutex_cs.unlock();
+      if(csLocal != FOLLOWER) // candidates become followers
+        setCurrState(FOLLOWER); 
       
       if(request->entries().size() == 0){
         rpcSuccess = true;
@@ -883,14 +898,16 @@ public:
     int lli = req->lastlogindex();
     int llt = req->lastlogterm();
 
+    mutex_cs.lock();
     printf("[RequestVote] invoked on %s %d by candidate %d for term %d\n", stateNames[currState].c_str(), serverID, candidateID, term);
+    mutex_cs.unlock();
 
     mutex_ct.lock();
     int ctLocal = currentTerm;
     mutex_ct.unlock();
 
 
-    if (term < ctLocal){ // follower has a greater term than candidate so it will not vote
+    if (term < ctLocal){ // curr server has a greater term than candidate so it will not vote
       resp->set_term(ctLocal);
       resp->set_votegranted(false);
       printf("NOT voting: term %d < currentTerm %d\n", term, ctLocal);
@@ -898,14 +915,35 @@ public:
       return Status::OK;
     }else if(term == ctLocal){ // that means someBody has already sent the requestVote as it has already seen this term     
       mutex_vf.lock();
-      if(votedFor == candidateID) {
-        resp->set_term(ctLocal);
-        resp->set_votegranted(true);
-        electionTimer.reset(getRandomTimeout());
-        printf("VOTED!: already votedFor %d\n", votedFor);
+      if(votedFor == -1 || votedFor == candidateID) {
+        int voter_lli = 0;
+        int voter_llt = 0;
+        if(logs.size()>0){
+          voter_lli = logs.back().index;
+          voter_llt = logs.back().term;
+        }
+
+        if(llt > voter_llt || (llt == voter_llt && lli >= voter_lli)) { // candidate has longer log than voter or ..
+          resp->set_term(ctLocal); 
+          resp->set_votegranted(true);
+          electionTimer.reset(getRandomTimeout());
+          printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n", llt, voter_llt, lli, voter_lli);
+          printf("VOTED!: Candidate has longer log than me\n");
+          mutex_ct.lock();
+          currentTerm = term;
+          pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
+          mutex_ct.unlock();
+          votedFor = candidateID;
+          pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(candidateID));
+        } else {
+          resp->set_term(currentTerm); 
+          resp->set_votegranted(false);
+          printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n");
+          printf("NOT voting: I have most recent log or longer log\n");
+        }
         mutex_vf.unlock();
         return Status::OK;
-      } else if(votedFor!= -1) {
+      } else {
         resp->set_term(ctLocal);
         resp->set_votegranted(false);
         printf("NOT voting: votedFor %d\n", votedFor);
@@ -914,39 +952,6 @@ public:
       }
       mutex_vf.unlock();
     }
-
-    // Case left: term > currentTerm or term == currentTerm and has not voted anyone for this term
-    // compare llt and lli of voter and candidate
-    int voter_lli = 0;
-    int voter_llt = 0;
-    if(logs.size()>0){
-      voter_lli = logs.back().index;
-      voter_llt = logs.back().term;
-    }
-
-    if(llt > voter_llt || (llt == voter_llt && lli >= voter_lli)) { // candidate has longer log than voter or ..
-      resp->set_term(ctLocal); 
-      resp->set_votegranted(true);
-      electionTimer.reset(getRandomTimeout());
-      printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n", llt, voter_llt, lli, voter_lli);
-      printf("VOTED!: Candidate has longer log than me\n");
-      mutex_ct.lock();
-      currentTerm = term;
-      pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
-      mutex_ct.unlock();
-      mutex_vf.lock();
-      votedFor = candidateID;
-      pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(candidateID));
-      mutex_vf.unlock();
-
-      return Status::OK;
-    }
-
-    resp->set_term(currentTerm); 
-    resp->set_votegranted(false);
-    printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n");
-    printf("NOT voting: I have most recent log or longer log\n");
-
 
     // anything that doesn't follow the above condition don't vote!
     if(term > ctLocal){
@@ -961,17 +966,16 @@ public:
       mutex_ct.unlock();
 
       mutex_vf.lock();
-      votedFor = -1;
-      pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(-1));
+      votedFor = candidateID;
+      pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(votedFor));
       mutex_vf.unlock();
       // IMP: whenever currentTerm is increased we should also update votedFor to -1, should check AppendEntries also for such scenarios.
 
-      mutex_cs.lock();
-      State currStateLocal = currState;
-      mutex_cs.unlock();
-      if(currStateLocal == LEADER){
-        setCurrState(FOLLOWER);
-      }
+      setCurrState(FOLLOWER);
+      electionTimer.reset(getRandomTimeout());
+      resp->set_term(ctLocal); 
+      resp->set_votegranted(true);
+      printf("VOTED! Candidate %d has higher term than me.\n", candidateID);
     }
     return Status::OK;
   }
