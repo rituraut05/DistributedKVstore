@@ -545,7 +545,7 @@ void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterato
     logEntry.term = itr->term();
     logEntry.key = itr->key();
     logEntry.value = itr->value();
-    logs.emplace(logIndex++, logEntry); 
+    logs.push_back(logEntry); 
     mutex_lli.lock();
     lastLogIndex = itr->index();
     mutex_lli.unlock();
