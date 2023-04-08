@@ -280,7 +280,7 @@ void invokeRequestVote(int followerID){
     lastLogIndex = logs.back().index;
     lastLogTerm = logs.back().term;
   }
-  int ret = clients[followerID]->RequestVote(lastLogIndex, lastLogTerm, followerID);
+  int ret = clients[followerID]->RequestVote(lastLogTerm, lastLogIndex,followerID);
   if (ret == 1) {
     mutex_votes.lock();
     votesReceived++;
@@ -842,7 +842,7 @@ public:
       mutex_cs.unlock();
       if(csLocal != FOLLOWER) // candidates become followers
         setCurrState(FOLLOWER); 
-        
+
       int leaderCommitIndex = request->leadercommitindex();
       // if(request->entries().size() == 0){
       //   // rpcSuccess = true;
