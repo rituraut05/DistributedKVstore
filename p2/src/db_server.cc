@@ -570,13 +570,6 @@ void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterato
     // assert(status.ok()); should we add a try:catch here?
   }
   printRaftLog();
-  // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-  mutex_ci.lock();
-  mutex_lli.lock();
-  if(leaderCommitIndex > commitIndex)
-    commitIndex = std::min(leaderCommitIndex, lastLogIndex);
-  mutex_lli.unlock();
-  mutex_ci.unlock();
 }
 
 void openOrCreateDBs() {
@@ -849,70 +842,81 @@ public:
       mutex_cs.unlock();
       if(csLocal != FOLLOWER) // candidates become followers
         setCurrState(FOLLOWER); 
-      
-      if(request->entries().size() == 0){
-        // rpcSuccess = true;
-        // update commit index
-        int leaderCommitIndex = request->leadercommitindex();
-        mutex_ci.lock();
-        mutex_lli.lock();
-        if(leaderCommitIndex > commitIndex) {
-          printf("[AppendEntries RPC] Heartbeat requires updating commitIndex\n");
-          commitIndex = std::min(leaderCommitIndex, lastLogIndex);
-          printRaftLog();
-        }
-        mutex_lli.unlock();
-        mutex_ci.unlock();
-        if(request->prevlogindex() != 0){
-          // TODO: Uncomment if wiping in memory logs
-          // int vectorIndex = -1;
-          // auto logAtPrevIndex = --logs.begin();
-          // for(auto iter = logs.begin(); iter != logs.end(); iter++){
-          //   if(iter->index == request->prevlogindex()){
-          //     logAtPrevIndex = iter;
-          //     vectorIndex = logAtPrevIndex - logs.begin();
-          //     break;
-          //   }
-          // }
-          if((request->prevlogindex() <= logs.size()) && (logs[request->prevlogindex()-1].term == request->prevlogterm())){
-            rpcSuccess = true;
-          } 
-        } else {
-          rpcSuccess = true;
-        }
-      } else {
-        printf("[AppendEntries RPC] Received for, term = %d, prevLogIndex=%d, prevLogTerm=%d, No of entries=%d\n",
-          request->term(), request->prevlogindex(), request->prevlogterm(), request->entries().size());
-        int vectorIndex = -1;
-        auto logAtPrevIndex = --logs.begin();
-        for(auto iter = logs.begin(); iter != logs.end(); iter++){
-          if(iter->index == request->prevlogindex()){
-            logAtPrevIndex = iter;
-            vectorIndex = logAtPrevIndex - logs.begin();
-            break;
-          }
-        }
-        printf("[AppendEntries RPC] vectorIndex = %d\n", vectorIndex);
-        // check if req->prevLogIndex exists in LevelDB
-        bool existsInDB = false;
-        string prevLogFromDB = "";
-        if(vectorIndex == -1){
-          leveldb::Status logstatus = 
-                    plogs->Get(leveldb::ReadOptions(), to_string(request->prevlogindex()), &prevLogFromDB);
-          if(logstatus.ok())
-            existsInDB = true;
-        }
-
-        if((request->prevlogindex() == 0) || 
-          (vectorIndex > -1) && (logs[vectorIndex].term == request->prevlogterm()) ||
-          (existsInDB) && (Log(prevLogFromDB).term == request->prevlogterm()))  {
-            //append and change commit index
-            std::vector<db::LogEntry> logEntries(request->entries().begin(), request->entries().end());
-            updateLog(logEntries, ++logAtPrevIndex, request->leadercommitindex());
-            // updateLog should handle db update
-            rpcSuccess = true;
+        
+      int leaderCommitIndex = request->leadercommitindex();
+      // if(request->entries().size() == 0){
+      //   // rpcSuccess = true;
+      //   // update commit index
+      //   int leaderCommitIndex = request->leadercommitindex();
+      //   mutex_ci.lock();
+      //   mutex_lli.lock();
+      //   if(leaderCommitIndex > commitIndex) {
+      //     printf("[AppendEntries RPC] Heartbeat requires updating commitIndex\n");
+      //     commitIndex = std::min(leaderCommitIndex, lastLogIndex);
+      //     printRaftLog();
+      //   }
+      //   mutex_lli.unlock();
+      //   mutex_ci.unlock();
+      //   if(request->prevlogindex() != 0){
+      //     // TODO: Uncomment if wiping in memory logs
+      //     // int vectorIndex = -1;
+      //     // auto logAtPrevIndex = --logs.begin();
+      //     // for(auto iter = logs.begin(); iter != logs.end(); iter++){
+      //     //   if(iter->index == request->prevlogindex()){
+      //     //     logAtPrevIndex = iter;
+      //     //     vectorIndex = logAtPrevIndex - logs.begin();
+      //     //     break;
+      //     //   }
+      //     // }
+      //     if((request->prevlogindex() <= logs.size()) && (logs[request->prevlogindex()-1].term == request->prevlogterm())){
+      //       rpcSuccess = true;
+      //     } 
+      //   } else {
+      //     rpcSuccess = true;
+      //   }
+      // } else {
+      printf("[AppendEntries RPC] Received for, term = %d, prevLogIndex=%d, prevLogTerm=%d, No of entries=%d\n",
+        request->term(), request->prevlogindex(), request->prevlogterm(), request->entries().size());
+      // Look for prevLogIndex in local logs
+      int vectorIndex = -1;
+      auto logAtPrevIndex = --logs.begin();
+      for(auto iter = logs.begin(); iter != logs.end(); iter++){
+        if(iter->index == request->prevlogindex()){
+          logAtPrevIndex = iter;
+          vectorIndex = logAtPrevIndex - logs.begin();
+          break;
         }
       }
+      printf("[AppendEntries RPC] vectorIndex = %d\n", vectorIndex);
+      // check if req->prevLogIndex exists in LevelDB
+      bool existsInDB = false;
+      string prevLogFromDB = "";
+      if(vectorIndex == -1){
+        leveldb::Status logstatus = 
+                  plogs->Get(leveldb::ReadOptions(), to_string(request->prevlogindex()), &prevLogFromDB);
+        if(logstatus.ok())
+          existsInDB = true;
+      }
+
+      if((request->prevlogindex() == 0) || 
+        (vectorIndex > -1) && (logs[vectorIndex].term == request->prevlogterm()) ||
+        (existsInDB) && (Log(prevLogFromDB).term == request->prevlogterm()))  {
+          //append and change commit index
+          if(request->entries().size() > 0) {
+            std::vector<db::LogEntry> logEntries(request->entries().begin(), request->entries().end());
+            updateLog(logEntries, ++logAtPrevIndex, request->leadercommitindex());
+          }
+          // updateLog should handle db update
+          rpcSuccess = true;
+      }
+      // }
+      // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+      mutex_ci.lock();
+      mutex_lli.lock();
+      if(leaderCommitIndex > commitIndex)
+        commitIndex = std::min(leaderCommitIndex, lastLogIndex);
+      mutex_lli.unlock();
+      mutex_ci.unlock();
     } 
     response->set_currterm(currentTerm);
     response->set_success(rpcSuccess);
