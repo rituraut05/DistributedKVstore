@@ -941,48 +941,10 @@ public:
       printf("NOT voting: term %d < currentTerm %d\n", term, ctLocal);
 
       return Status::OK;
-    }else if(term == ctLocal){ // that means someBody has already sent the requestVote as it has already seen this term     
-      mutex_vf.lock();
-      if(votedFor == -1 || votedFor == candidateID) {
-        int voter_lli = 0;
-        int voter_llt = 0;
-        if(logs.size()>0){
-          voter_lli = logs.back().index;
-          voter_llt = logs.back().term;
-        }
-
-        if(llt > voter_llt || (llt == voter_llt && lli >= voter_lli)) { // candidate has longer log than voter or ..
-          resp->set_term(ctLocal); 
-          resp->set_votegranted(true);
-          electionTimer.reset(getRandomTimeout());
-          printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n", llt, voter_llt, lli, voter_lli);
-          printf("VOTED!: Candidate has longer log than me\n");
-          mutex_ct.lock();
-          currentTerm = term;
-          pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
-          mutex_ct.unlock();
-          votedFor = candidateID;
-          pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(candidateID));
-        } else {
-          resp->set_term(currentTerm); 
-          resp->set_votegranted(false);
-          printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n");
-          printf("NOT voting: I have most recent log or longer log\n");
-        }
-        mutex_vf.unlock();
-        return Status::OK;
-      } else {
-        resp->set_term(ctLocal);
-        resp->set_votegranted(false);
-        printf("NOT voting: votedFor %d\n", votedFor);
-        mutex_vf.unlock();
-        return Status::OK;
-      }
-      mutex_vf.unlock();
     }
-
-    // anything that doesn't follow the above condition don't vote!
     if(term > ctLocal){
+      // JUST UPDATE CURRENTTERM AND DON"T VOTE
+      // TODO: Discuss reasons
       /* just update currentTerm and don't vote.
       Reason 1: if the current leader which is alive and has same currentTerm can receive 
       this candidate's term on next appendEntries response becomes a follower.
@@ -994,7 +956,7 @@ public:
       mutex_ct.unlock();
 
       mutex_vf.lock();
-      votedFor = candidateID;
+      votedFor = -1;
       pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(votedFor));
       mutex_vf.unlock();
       // IMP: whenever currentTerm is increased we should also update votedFor to -1, should check AppendEntries also for such scenarios.
@@ -1002,9 +964,51 @@ public:
       setCurrState(FOLLOWER);
       electionTimer.reset(getRandomTimeout());
       resp->set_term(ctLocal); 
-      resp->set_votegranted(true);
-      printf("VOTED! Candidate %d has higher term than me.\n", candidateID);
+      resp->set_votegranted(false);
+      printf("[RequestVote]Candidate %d has higher term than me, updating current term.\n", candidateID);
     }
+    
+    // else if(term == ctLocal){ // that means someBody has already sent the requestVote as it has already seen this term     
+    mutex_vf.lock();
+    if(votedFor == -1 || votedFor == candidateID) {
+      int voter_lli = 0;
+      int voter_llt = 0;
+      if(logs.size()>0){
+        voter_lli = logs.back().index;
+        voter_llt = logs.back().term;
+      }
+
+      if(llt > voter_llt || (llt == voter_llt && lli >= voter_lli)) { // candidate has longer log than voter or ..
+        resp->set_term(ctLocal); 
+        resp->set_votegranted(true);
+        electionTimer.reset(getRandomTimeout());
+        printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n", llt, voter_llt, lli, voter_lli);
+        printf("VOTED!: Candidate has longer log than me\n");
+        mutex_ct.lock();
+        currentTerm = term;
+        pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
+        mutex_ct.unlock();
+        votedFor = candidateID;
+        pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(candidateID));
+      } else {
+        resp->set_term(currentTerm); 
+        resp->set_votegranted(false);
+        printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n");
+        printf("NOT voting: I have most recent log or longer log\n");
+      }
+      mutex_vf.unlock();
+      return Status::OK;
+    } else {
+      resp->set_term(ctLocal);
+      resp->set_votegranted(false);
+      printf("NOT voting: votedFor %d\n", votedFor);
+      mutex_vf.unlock();
+      return Status::OK;
+    }
+    mutex_vf.unlock();
+    // }
+
+    // anything that doesn't follow the above condition don't vote!
     return Status::OK;
   }
 
