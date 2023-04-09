@@ -40,16 +40,17 @@ def main():
     while(i < num_requests):
         if(random.uniform(0, 1) <= rw_ratio):
             # print('read')
-            get_cmd = cmd + list(str(key_list[i]))
+            get_cmd = cmd + [str(key_list[i])]
             start = time.perf_counter_ns()
-            run(get_cmd, stdout=FNULL, stderr=FNULL, shell=True)
+            # run(get_cmd, stdout=FNULL, stderr=FNULL)
+            run(get_cmd)
             t = time.perf_counter_ns() - start
             timestamps_get.append(t)
         else:
             # print('write')
-            put_cmd = cmd + list([str(key_list[i]), str(time.perf_counter_ns())])
+            put_cmd = cmd + [str(key_list[i]), str(time.perf_counter_ns())]
             start = time.perf_counter_ns()
-            run(put_cmd, stdout=FNULL, stderr=FNULL, shell=True)
+            run(put_cmd, stdout=FNULL, stderr=FNULL)
             t = time.perf_counter_ns() - start
             timestamps_put.append(t)
         i = i+1
@@ -59,7 +60,7 @@ def main():
     mean_latency = mean(timestamps_get + timestamps_put)
     print(f'mean read latency is {mean(timestamps_get)/1000000} ms')
     print(f'mean write latency is {mean(timestamps_put)/1000000} ms') 
-    print(timestamps_put)
+    # print(timestamps_put)
     print(f'mean latency is {mean_latency/1000000} ms')
 
 if __name__ == "__main__":

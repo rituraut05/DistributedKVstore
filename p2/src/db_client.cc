@@ -39,11 +39,15 @@ using std::cout;
 using std::endl;
 using std::string;
 using db::PingMessage;
+using std::stoi;
+using std::to_string;
 
 #define SERVER_ADDR           "0.0.0.0:50052"
 typedef std::unique_ptr<RaftServer::Stub> ServerStub;
 
-uint32_t leaderID = 0; // hardcoded leaderID for now, should remove.
+std::fstream leaderidFile;
+uint32_t leaderID = 0;
+
 DbClient::DbClient(std::shared_ptr<Channel> channel)
     : stub_(RaftServer::NewStub(channel))
 {
@@ -64,7 +68,7 @@ ServerStub initConnection(int id){
     return stub;
 }
 
-int DbClient::Ping(int* round_trip_time)
+int DbClient::Ping(int *round_trip_time)
 {
     auto start = std::chrono::steady_clock::now();
 
@@ -76,9 +80,7 @@ int DbClient::Ping(int* round_trip_time)
     status = stub_->Ping(&context, request, &reply);
 
     if (status.ok()) {
-        auto end = std::chrono::steady_clock::now();
-        std::chrono::nanoseconds ns = end - start;
-        *round_trip_time = ns.count();
+
         return 0;
     }
     else {
@@ -115,6 +117,18 @@ int DbClient::Get(string key, string value) {
         retries[i] = maxRetries;
     }
 
+    string lid;
+    leaderidFile.seekg(0);
+    leaderidFile >> lid;
+    if(!lid.empty()) {
+        leaderID = stoi(lid);
+        leaderFound = true;
+        printf("Leader id found to be %d\n", leaderID);
+    } else { 
+        printf("Leaderid file was empty/new file\n");
+    }
+    
+
     for(int id = 0; id < SERVER_CNT && !leaderFound; id++){
         if(retries[id] == 0){
             continue; // try next server if the max retries for server with id are completed.
@@ -133,6 +147,8 @@ int DbClient::Get(string key, string value) {
                     if(res.leaderid() >=0 && res.leaderid()<5){ // correct leaderID returned by follower
                         leaderFound = true;
                         leaderID = res.leaderid(); // set correct leaderID which was returned by follower
+                        leaderidFile.seekg(0);
+                        leaderidFile << to_string(leaderID);
                         printf("ServerID = %d, leaderID sent by follower: %d \n", id, res.leaderid());
                         break; // break to call get on the correct leaderID
                     }
@@ -142,6 +158,10 @@ int DbClient::Get(string key, string value) {
                 printf("[Get]: Function ended due to server failure.\n");
                 errno = server_errno;
                 return -1;
+            } else {
+                leaderidFile.seekg(0);
+                leaderidFile << to_string(id);
+                printf("New leader id = %d\n", id);
             }
 
             value = res.value();
@@ -165,14 +185,22 @@ int DbClient::Get(string key, string value) {
         }
     }
 
-    if(leaderFound) {
+    while(leaderFound) {
         ServerStub stub = initConnection(leaderID);
         ClientContext context;
         status = stub->Get(&context, req, &res);
-
         if (status.ok()) {
             int server_errno = res.db_errno();
-            if (server_errno) {
+            if(server_errno == EPERM) { // req called on follower
+                if(res.leaderid() >=0 && res.leaderid()<5){ // correct leaderID returned by follower
+                    leaderFound = true;
+                    leaderID = res.leaderid(); // set correct leaderID which was returned by follower
+                    leaderidFile.seekg(0);
+                    leaderidFile << to_string(leaderID);
+                    printf("Leader changed! New leaderid = %d \n", res.leaderid());
+                }
+                continue;
+            } else if(server_errno) {
                 printf("[Get]: Error %d on server.\n", server_errno);
                 printf("[Get]: Function ended due to server failure.\n");
                 errno = server_errno;
@@ -180,7 +208,6 @@ int DbClient::Get(string key, string value) {
             }
             value = res.value();
             printf("Value: %s\n", value.c_str());
-            
             printf("[Get]: Function ended;\n");
             return 0;
         } else {
@@ -188,11 +215,11 @@ int DbClient::Get(string key, string value) {
             printf("[Get]: RPC failure\n");
             return -1;
         }
-    } else {
+    }
+    if(!leaderFound) {
         printf("Leader not Found\n");
         return -1;
     }
-
 }
 
 
@@ -215,6 +242,14 @@ int DbClient::Put(string key, string value) {
         retries[i] = maxRetries;
     }
 
+    string lid;
+    leaderidFile.seekg(0);
+    leaderidFile >> lid;
+    if(!lid.empty()) {
+        leaderID = stoi(lid);
+        leaderFound = true;
+    }
+
     for(int id = 0; id < SERVER_CNT && !leaderFound; id++){
         if(retries[id] == 0){
             continue; // try next server if the max retries for server with id are completed.
@@ -225,7 +260,7 @@ int DbClient::Put(string key, string value) {
 
         status = stub->Put(&context, req, &res);
         printf("Status: %d\n", status.ok());
-
+        
         if (status.ok()) { // the request was called on leader
             int server_errno = res.db_errno();
             if (server_errno) {
@@ -233,6 +268,8 @@ int DbClient::Put(string key, string value) {
                     if(res.leaderid() >=0 && res.leaderid()<5){ // correct leaderID returned by follower
                         leaderFound = true;
                         leaderID = res.leaderid(); // set correct leaderID which was returned by follower
+                        leaderidFile.seekg(0);
+                        leaderidFile << to_string(leaderID);
                         printf("ServerID = %d, leaderID sent by follower: %d \n", id, res.leaderid());
                         break; // break to call Put on the correct leaderID
                     }
@@ -242,6 +279,10 @@ int DbClient::Put(string key, string value) {
                 printf("[Put]: Function ended due to server failure.\n");
                 errno = server_errno;
                 return -1;
+            } else {
+                leaderidFile.seekg(0);
+                leaderidFile << to_string(id);
+                printf("New leader id = %d\n", id);
             }
 
             // value = res.value();
@@ -265,28 +306,37 @@ int DbClient::Put(string key, string value) {
         }
     }
 
-    if(leaderFound) {
+    while(leaderFound) {
         ServerStub stub = initConnection(leaderID);
         ClientContext context;
         status = stub->Put(&context, req, &res);
-
+        
         if (status.ok()) {
             int server_errno = res.db_errno();
-            if (server_errno) {
+            if(server_errno == EPERM) { // req called on follower
+                if(res.leaderid() >=0 && res.leaderid()<5){ // correct leaderID returned by follower
+                    leaderFound = true;
+                    leaderID = res.leaderid(); // set correct leaderID which was returned by follower
+                    leaderidFile.seekg(0);
+                    leaderidFile << to_string(leaderID);
+                    printf("Leader changed! New leaderID = %d \n", res.leaderid());
+                }
+                continue;
+            } else if(server_errno) {
                 printf("[Put]: Error %d on server.\n", server_errno);
                 printf("[Put]: Function ended due to server failure.\n");
                 errno = server_errno;
                 return -1;
             }
-            
             printf("[Put]: Function ended;\n");
             return 0;
         } else {
             errno = RPCstatusCode(status.error_code());
-            printf("[Put]: RPC failure\n");
+            printf("[Get]: RPC failure\n");
             return -1;
         }
-    } else {
+    }
+    if(!leaderFound) {
         printf("Leader not Found\n");
         return -1;
     }
@@ -298,6 +348,12 @@ int main(int argc, char **argv)
     string key, value;
     DbClient* client;
     client = new DbClient();
+
+    leaderidFile.open("leaderid.txt", std::ios::in | std::ios::out);
+    if(!leaderidFile) {
+        printf("No leaderid.txt found. Please create one in build.\n");
+        return 0;
+    }
     if(argc == 2){
         key = argv[1];
         string val;
@@ -309,9 +365,8 @@ int main(int argc, char **argv)
         int err = client->Put(key, value);
     }else{
         printf("Usage:\nTo get value from db:\n ./db_client <key> \nTo put key value pair in db:\n ./db_client <key> <value>\n");
-        return 0;
     }
+    leaderidFile.close();
 
-	// init grpc connection
     return 0;
 }
