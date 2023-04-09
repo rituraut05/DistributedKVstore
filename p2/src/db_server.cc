@@ -225,13 +225,6 @@ int getRandomTimeout() {
   return distribution(generator);
 }
 
-int getRandomBackoffTime() {
-  unsigned seed = system_clock::now().time_since_epoch().count();
-  default_random_engine generator(seed);
-  uniform_int_distribution<int> distribution(HEARTBEAT_TIMEOUT/4, HEARTBEAT_TIMEOUT/2);
-  return distribution(generator);
-}
-
 bool greaterThanMajority(int arr[], int N) {
   int majcnt = (SERVER_CNT+1)/2;
   for(int i = 0; i<SERVER_CNT; i++) {
@@ -403,9 +396,11 @@ int sendAppendEntriesRpc(int followerid, int lastidx){
       matchIndex[followerid] = lastidx;
     }
   }
-  if(ret == -1) {
-    usleep(getRandomBackoffTime()*1000);
-  }
+  // if(ret == -1) {
+  //   Timer backoffTimer(1, HEARTBEAT_TIMEOUT);
+  //   backoffTimer.start(HEARTBEAT_TIMEOUT);
+  //   while(backoffTimer.get_tick() < backoffTimer._timeout) ; // spin
+  // }
   if(ret == -2) { // log inconsistency
     printf("[sendAppendEntriesRpc] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
     nextIndex[followerid]--;
@@ -769,7 +764,7 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
     }
   } else {
     // if(lastIndex != 0)
-    //   printf("[RaftClient::AppendEntries] RPC Failure\n");
+    //   printf("[RaftClient::AppendEntries] RPC Failure for startidx = %d, endidx = %d\n", logIndex, lastIndex);
     return -1;
   }
   return 0;
