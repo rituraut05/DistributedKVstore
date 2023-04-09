@@ -1,0 +1,25 @@
+snehalw@node0:~/cs739/p2/scripts$ python perf_benchmarker.py -n 1000 -rw 0.5
+number of client requests to server: 1000
+read write ratio: 0.5
+m_l = 30600255.326 ns
+mean read latency is 27.838783333333332 ms
+mean write latency is 33.19392692231076 ms
+mean latency is 30.527065415 ms
+
+snehalw@node0:~/cs739/p2/scripts$ python perf_benchmarker.py -n 5000 -rw 0.5
+number of client requests to server: 5000
+read write ratio: 0.5
+m_l = 30243261.4652 ns
+mean read latency is 27.65508544198442 ms
+mean write latency is 32.57422245646232 ms
+mean latency is 30.1746674208 ms
+
+snehalw@node0:~/cs739/p2/scripts$ python perf_benchmarker.py -n 5000 -rw 0.5
+number of client requests to server: 5000
+read write ratio: 0.5
+m_l = 30243032.6924 ns
+mean read latency is 27.603259677804296 ms
+mean write latency is 32.76890856033789 ms
+mean latency is 30.1716203022 ms
+
+
