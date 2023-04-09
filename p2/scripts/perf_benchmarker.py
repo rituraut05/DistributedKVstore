@@ -42,8 +42,8 @@ def main():
             # print('read')
             get_cmd = cmd + [str(key_list[i])]
             start = time.perf_counter_ns()
-            # run(get_cmd, stdout=FNULL, stderr=FNULL)
-            run(get_cmd)
+            run(get_cmd, stdout=FNULL, stderr=FNULL)
+            # run(get_cmd)
             t = time.perf_counter_ns() - start
             timestamps_get.append(t)
         else:
