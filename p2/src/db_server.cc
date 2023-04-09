@@ -547,14 +547,14 @@ void runRaftServer() {
 }
 
 void printRaftLog() {
-  printf("======================== Raft Log ===========================\n");
-  printf("Index Term  Key:Value\n");
-  for(auto logIt = logs.begin(); logIt != logs.end(); logIt++) {
-    printf("%d  %d  %s:%s\n", logIt->index, logIt->term, (logIt->key).c_str(), (logIt->value).c_str());
-  }
-  printf("\nCommit Index: %d\n", commitIndex);
-  printf("Current Term: %d\n\n", currentTerm);
-  printf("=============================================================\n");
+  // printf("======================== Raft Log ===========================\n");
+  // printf("Index Term  Key:Value\n");
+  // for(auto logIt = logs.begin(); logIt != logs.end(); logIt++) {
+  //   printf("%d  %d  %s:%s\n", logIt->index, logIt->term, (logIt->key).c_str(), (logIt->value).c_str());
+  // }
+  // printf("\nCommit Index: %d\n", commitIndex);
+  // printf("Current Term: %d\n\n", currentTerm);
+  // printf("=============================================================\n");
 }
 
 void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterator logIndex, int leaderCommitIndex){
