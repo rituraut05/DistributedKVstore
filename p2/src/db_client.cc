@@ -213,7 +213,8 @@ int DbClient::Get(string key, string value) {
         } else {
             errno = RPCstatusCode(status.error_code());
             printf("[Get]: RPC failure\n");
-            return -1;
+            leaderID = (leaderID+1)%5;
+            // return -1;
         }
     }
     if(!leaderFound) {
@@ -333,7 +334,8 @@ int DbClient::Put(string key, string value) {
         } else {
             errno = RPCstatusCode(status.error_code());
             printf("[Get]: RPC failure\n");
-            return -1;
+            leaderID = (leaderID+1)%5;
+            // return -1;
         }
     }
     if(!leaderFound) {
@@ -358,11 +360,13 @@ int main(int argc, char **argv)
         key = argv[1];
         string val;
         int err = client->Get(key, val);
+        return err;
     }
     else if(argc == 3){
         key = argv[1];
         value = argv[2];
         int err = client->Put(key, value);
+        return err;
     }else{
         printf("Usage:\nTo get value from db:\n ./db_client <key> \nTo put key value pair in db:\n ./db_client <key> <value>\n");
     }

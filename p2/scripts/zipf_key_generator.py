@@ -46,13 +46,13 @@ frequencies = [freq / total for freq in frequencies]
 
 # Generate a workload of 1000 requests
 requests = []
-for i in range(1000):
+for i in range(100000):
     rank = random.choices(range(N), weights=frequencies)[0]
     requests.append(rank)
 
 # Print the first 10 requests
 # print(requests)
 # print(len(requests))
-filename='zipfian_keys.csv'
+filename='zipfian_keys_100k.csv'
 with open(filename, 'w') as file:
     file.write(','.join(str(key) for key in requests))
