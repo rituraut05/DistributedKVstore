@@ -44,9 +44,9 @@ for i in range(100000):
 total = sum(frequencies)
 frequencies = [freq / total for freq in frequencies]
 
-# Generate a workload of 100 requests
+# Generate a workload of 1000 requests
 requests = []
-for i in range(100):
+for i in range(1000):
     rank = random.choices(range(N), weights=frequencies)[0]
     requests.append(rank)
 
