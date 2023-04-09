@@ -547,14 +547,14 @@ void runRaftServer() {
 }
 
 void printRaftLog() {
-  printf("======================== Raft Log ===========================\n");
-  printf("Index Term  Key:Value\n");
-  for(auto logIt = logs.begin(); logIt != logs.end(); logIt++) {
-    printf("%d  %d  %s:%s\n", logIt->index, logIt->term, (logIt->key).c_str(), (logIt->value).c_str());
-  }
-  printf("\nCommit Index: %d\n", commitIndex);
-  printf("Current Term: %d\n\n", currentTerm);
-  printf("=============================================================\n");
+  // printf("======================== Raft Log ===========================\n");
+  // printf("Index Term  Key:Value\n");
+  // for(auto logIt = logs.begin(); logIt != logs.end(); logIt++) {
+  //   printf("%d  %d  %s:%s\n", logIt->index, logIt->term, (logIt->key).c_str(), (logIt->value).c_str());
+  // }
+  // printf("\nCommit Index: %d\n", commitIndex);
+  // printf("Current Term: %d\n\n", currentTerm);
+  // printf("=============================================================\n");
 }
 
 void updateLog(std::vector<LogEntry> logEntries, std::vector<Log>::const_iterator logIndex, int leaderCommitIndex){
@@ -932,6 +932,7 @@ public:
       */
       mutex_ct.lock();
       currentTerm = term;
+      ctLocal = term;
       pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
       mutex_ct.unlock();
 
@@ -971,7 +972,7 @@ public:
         votedFor = candidateID;
         pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(candidateID));
       } else {
-        resp->set_term(currentTerm); 
+        resp->set_term(ctLocal); 
         resp->set_votegranted(false);
         printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n");
         printf("NOT voting: I have most recent log or longer log\n");
@@ -994,17 +995,19 @@ public:
 
   Status Get(ServerContext *context, const GetRequest *req, GetResponse *resp) override
   {
+    mutex_cs.lock();
     printf("Get request invoked on %s\n", stateNames[currState].c_str());
     if(currState!= LEADER){
       resp->set_value("");
+      mutex_leader.lock();
       printf("Setting leaderID to %d\n", leaderID);
       resp->set_leaderid(leaderID);
+      mutex_leader.unlock();
       resp->set_db_errno(EPERM);
-
-      printf("leaderID Set in response: %d\n",resp->leaderid());
+      mutex_cs.unlock();
       return Status::OK;
     }
-    printf("Get invoked on server\n");
+    mutex_cs.unlock();
     string value;
     string key = req->key();
     leveldb::ReadOptions options;
@@ -1012,22 +1015,26 @@ public:
     leveldb::Status status = replicateddb->Get(options, key, &value);
     printf("Value: %s\n", value.c_str());
     resp->set_value(value);
+    mutex_leader.lock();
     resp->set_leaderid(leaderID);
+    mutex_leader.unlock();
     return Status::OK;
   }
   
   Status Put(ServerContext *context, const PutRequest *req, PutResponse *resp) override
   {
+    mutex_cs.lock();
     printf("Put request invoked on %s\n", stateNames[currState].c_str());
     if(currState!= LEADER){
+      mutex_leader.lock();
       printf("Setting leaderID to %d\n", leaderID);
       resp->set_leaderid(leaderID);
+      mutex_leader.unlock();
       resp->set_db_errno(EPERM);
-
-      printf("leaderID Set in response: %d\n",resp->leaderid());
+      mutex_cs.unlock();
       return Status::OK;
     }
-
+    mutex_cs.unlock();
     string value = req->value();
     string key = req->key();
 
@@ -1068,7 +1075,9 @@ public:
 
     printRaftLog();
 
+    mutex_leader.lock();
     resp->set_leaderid(leaderID);
+     mutex_leader.unlock();
     return Status::OK;
   }
 };
