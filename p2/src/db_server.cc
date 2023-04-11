@@ -166,6 +166,7 @@ Timer electionTimer(1, MAX_ELECTION_TIMEOUT);
 Timer heartbeatTimer(1, HEARTBEAT_TIMEOUT);
 bool electionRunning = false; //put lock
 bool appendEntriesRunning[SERVER_CNT];
+bool sendLogEntries[SERVER_CNT];
 RaftClient* clients[SERVER_CNT];
 
 std::shared_mutex mutex_; // for heartbeatSender
@@ -390,24 +391,25 @@ void runHeartbeatTimer() {
 int sendAppendEntriesRpc(int followerid, int lastidx){
   int ret = clients[followerid]->AppendEntries(nextIndex[followerid], lastidx);
   if(ret == 0) { // success
+   sendLogEntries[followerid] = true;
     if(lastidx != 0) {
       printf("[sendAppendEntriesRpc] AppendEntries successful for followerid = %d, startidx = %d, endidx = %d\n", followerid, nextIndex[followerid], lastidx);
       nextIndex[followerid] = lastidx + 1;
       matchIndex[followerid] = lastidx;
     }
   }
-  // if(ret == -1) {
-  //   Timer backoffTimer(1, HEARTBEAT_TIMEOUT);
-  //   backoffTimer.start(HEARTBEAT_TIMEOUT);
-  //   while(backoffTimer.get_tick() < backoffTimer._timeout) ; // spin
-  // }
+  if(ret == -1) { // RPC Failure
+    sendLogEntries[followerid] = false;
+  }
   if(ret == -2) { // log inconsistency
     printf("[sendAppendEntriesRpc] AppendEntries failure; Log inconsistency for followerid = %d, new nextIndex = %d\n", followerid, nextIndex[followerid]);
+    sendLogEntries[followerid] = true;
     nextIndex[followerid]--;
   }
   if(ret == -3) { // term of follower bigger, convert to follower
     printf("[sendAppendEntriesRpc] AppendEntries failure; Follower (%d) has bigger term (new term = %d), converting to follower.\n", followerid, currentTerm);
     pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
+    sendLogEntries[followerid] = true;
     setCurrState(FOLLOWER);
     return -1;
   }
@@ -420,15 +422,15 @@ void invokeAppendEntries(int followerid) {
     if(followerid == serverID) matchIndex[followerid] = lastLogIndex;
     mutex_.lock();
     if(followerid != serverID && heartbeatSender[followerid] == 1){
-      mutex_ct.lock();
+      // mutex_ct.lock();
       // printf("[invokeAppendEntries] Sending Hearbeat to follower %d for term = %d\n", followerid, currentTerm);
-      mutex_ct.unlock();
+      // mutex_ct.unlock();
       status = sendAppendEntriesRpc(followerid, 0);
       heartbeatSender[followerid] = 0;
     }
     mutex_.unlock();
     mutex_lli.lock();
-    if(followerid != serverID && nextIndex[followerid] <= lastLogIndex) {
+    if(followerid != serverID && nextIndex[followerid] <= lastLogIndex && sendLogEntries[followerid]) {
       int lastidx = lastLogIndex;
       status = sendAppendEntriesRpc(followerid, lastidx);
     }
@@ -524,6 +526,7 @@ void runRaftServer() {
             heartbeatSender[i] = 0;
           }
           mutex_lli.unlock();
+          sendLogEntries[i] = true;
           appendEntriesRunning[i] = true;
           printf("[runRaftServer] Starting AppendEntriesInvoker for term = %d\n", ctLocal);
           appendEntriesThreads[i] = thread { invokeAppendEntries, i };
@@ -759,12 +762,12 @@ int RaftClient::AppendEntries(int logIndex, int lastIndex) {
         return -3; // leader should convert to follower
       } else {
         printf("[RaftClient::AppendEntries] Term mismatch at prevLogIndex. Try with a lower nextIndex.\n");
-        return -2; // decriment nextIndex
+        return -2; // decrement nextIndex
       }
     }
   } else {
-    // if(lastIndex != 0)
-    //   printf("[RaftClient::AppendEntries] RPC Failure for startidx = %d, endidx = %d\n", logIndex, lastIndex);
+    if(lastIndex != 0)
+      printf("[RaftClient::AppendEntries] RPC Failure\n");
     return -1;
   }
   return 0;
@@ -937,7 +940,6 @@ public:
       */
       mutex_ct.lock();
       currentTerm = term;
-      ctLocal = term;
       pmetadata->Put(leveldb::WriteOptions(), "currentTerm", to_string(currentTerm));
       mutex_ct.unlock();
 
@@ -977,7 +979,7 @@ public:
         votedFor = candidateID;
         pmetadata->Put(leveldb::WriteOptions(), "votedFor", to_string(candidateID));
       } else {
-        resp->set_term(ctLocal); 
+        resp->set_term(currentTerm); 
         resp->set_votegranted(false);
         printf("llt = %d \nvoter_llt = %d \nlli = %d \nvoter_lli = %d\n");
         printf("NOT voting: I have most recent log or longer log\n");
@@ -1000,19 +1002,17 @@ public:
 
   Status Get(ServerContext *context, const GetRequest *req, GetResponse *resp) override
   {
-    mutex_cs.lock();
     printf("Get request invoked on %s\n", stateNames[currState].c_str());
     if(currState!= LEADER){
       resp->set_value("");
-      mutex_leader.lock();
       printf("Setting leaderID to %d\n", leaderID);
       resp->set_leaderid(leaderID);
-      mutex_leader.unlock();
       resp->set_db_errno(EPERM);
-      mutex_cs.unlock();
+
+      printf("leaderID Set in response: %d\n",resp->leaderid());
       return Status::OK;
     }
-    mutex_cs.unlock();
+    printf("Get invoked on server\n");
     string value;
     string key = req->key();
     leveldb::ReadOptions options;
@@ -1020,26 +1020,22 @@ public:
     leveldb::Status status = replicateddb->Get(options, key, &value);
     printf("Value: %s\n", value.c_str());
     resp->set_value(value);
-    mutex_leader.lock();
     resp->set_leaderid(leaderID);
-    mutex_leader.unlock();
     return Status::OK;
   }
   
   Status Put(ServerContext *context, const PutRequest *req, PutResponse *resp) override
   {
-    mutex_cs.lock();
     printf("Put request invoked on %s\n", stateNames[currState].c_str());
     if(currState!= LEADER){
-      mutex_leader.lock();
       printf("Setting leaderID to %d\n", leaderID);
       resp->set_leaderid(leaderID);
-      mutex_leader.unlock();
       resp->set_db_errno(EPERM);
-      mutex_cs.unlock();
+
+      printf("leaderID Set in response: %d\n",resp->leaderid());
       return Status::OK;
     }
-    mutex_cs.unlock();
+
     string value = req->value();
     string key = req->key();
 
@@ -1080,9 +1076,7 @@ public:
 
     printRaftLog();
 
-    mutex_leader.lock();
     resp->set_leaderid(leaderID);
-     mutex_leader.unlock();
     return Status::OK;
   }
 };
