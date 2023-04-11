@@ -1,5 +1,7 @@
 import os
 from subprocess import run
+from subprocess import TimeoutExpired
+from subprocess import CompletedProcess
 import time
 from statistics import mean
 import argparse
@@ -21,7 +23,7 @@ if args.read_write_ratio:
     print("read write ratio: % s" % args.read_write_ratio)
 
 def main():
-    filename='zipfian_keys_100k.csv'
+    filename='zipfian_keys.csv'
     with open(filename, 'r') as file:
         keys = file.read()
     key_list = [int(x) for x in keys.split(',')]
@@ -32,25 +34,36 @@ def main():
     cmd = ["./../src/build/db_client"]
     throughput = []
     i = 0
+    p = CompletedProcess(args=[], returncode=-1)
     t_start = t = time.perf_counter_ns()
     count = i = 0    
     while(i < num_requests):
         if(random.uniform(0, 1) <= rw_ratio):
             get_cmd = cmd + [str(key_list[i])]
             p = run(get_cmd, stdout=FNULL, stderr=FNULL)
+            # try:
+            #     p = run(get_cmd, stdout=FNULL, stderr=FNULL, timeout=1)
+            # except TimeoutExpired:
+            #     print("Timeout Exception")
             # print(f'{i} returncode: {p.returncode}')
             if(p.returncode != 0):
                 count = count-1
+                print(f'{i} returncode: {p.returncode}')
             # timestamps_get.append(t)
         else:
             put_cmd = cmd + [str(key_list[i]), str(time.perf_counter_ns())]
             p = run(put_cmd, stdout=FNULL, stderr=FNULL)
+            # try:
+            #     p = run(put_cmd, stdout=FNULL, stderr=FNULL, timeout=1)
+            # except TimeoutExpired:
+            #     print("Timeout Exception")
             if(p.returncode != 0):
                 count = count-1
+                print(f'{i} returncode: {p.returncode}')
             # timestamps_put.append(t)
         count = count+1
         t_s = time.perf_counter_ns()
-        if(t_s - t > 500000000 ):
+        if(t_s - t > 200000000 ):
             tput = count*1e9/(t_s-t)
             print(tput)
             throughput.append(tput)
